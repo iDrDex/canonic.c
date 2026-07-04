@@ -9,6 +9,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: grep -v '^#' PROJECTION | sha256sum -c -
 
+  projection:
+    name: "sov — the tree is the sov's regrowth"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./regrow.sh
+
   chip:
     name: "the chip — native CommonCrypto"
     runs-on: macos-latest

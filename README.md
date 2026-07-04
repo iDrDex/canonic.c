@@ -57,6 +57,23 @@ chain coordinates. CI recomputes it on every push: **a hand edit to the kernel f
 the gate by construction.** On a CANONIC box, `./project.sh <magic.sov>` is the only
 legitimate writer.
 
+## Sov code, not source code
+
+The artifact in this repo is **[`canonic.sov`](canonic.sov)** — ~8 KB, a tar.gz holding a
+manifest and one hash chain in which **every file of this tree is a sealed record**,
+chained by the kernel's own law (`SHA256(prev ++ content)`, genesis all-zeros), with
+the kernel itself as record zero. The checked-in tree — including this README — is a
+*projection*: a regrowth of the sov for human eyes and GitHub tooling.
+
+[`regrow.sh`](regrow.sh) is the projection gate, run in CI on every push: it verifies
+the sov chain link by link, then diffs every record against the tree. **If the tree
+drifts from the sov, the build fails.** Change flows sov → tree, never tree → sov.
+
+```sh
+./regrow.sh    # sov chain: VALID · projection: EXACT
+tar -tzf canonic.sov   # sov.manifest · canonic.chain — look inside
+```
+
 ## Build
 
 ```sh

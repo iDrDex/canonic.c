@@ -21,6 +21,7 @@ test: selftest
 
 gate:
 	grep -v '^#' PROJECTION | shasum -a 256 -c -
+	./regrow.sh
 	$(MAKE) test
 
 clean:
