@@ -1,84 +1,43 @@
-# canonic.c ∩
+# canonic.c ∩ — sov code, not source code
 
-**The CANONIC kernel: 56 lines of code · 3 operations · 1 byte · 0 bytes of state.**
+**This branch carries no source tree. The artifact is [`canonic.sov`](canonic.sov) —
+~8 KB that regrows, builds, and proves the entire project.**
 
-Compiled `-Os` on Apple silicon it is **492 bytes of machine code** exporting exactly
-three symbols — `canonic_seal`, `canonic_verify`, `canonic_gov` — with one borrowed
-primitive (SHA-256) and a public interface that is a single byte. This is **open
-governance, not necessarily open source**: the kernel is the open paradigm anyone can
-verify against; the runtime it boots (Magic OS: the codec, the walkers, the surface)
-stays gated on the chip.
-
-```
-make test
-  chain: VALID
-  tampered: BROKEN (caught)
-  gov: 255/255
-  decayed: 237/255 (E,O unbound)
-  ALL GATES PASS
-```
-
-## The three operations
-
-| op | signature | what it is |
-|---|---|---|
-| **SEAL** | `hash = SHA256(prev ++ formal)` | a record's identity is the hash of its predecessor's hash concatenated with its own content — the whole protocol |
-| **VERIFY** | fold the chain, reseal every link | any edit anywhere breaks the seal of everything after it; returns VALID iff the recomputed head matches |
-| **MINT** | OR proven chain-facts into one byte | governance encoded bitwise, from chain bits only — the kernel never stats a file or walks a tree |
-
-## The byte — the entire ABI, frozen forever
-
-| bit | mask | name | bound to |
-|---|---|---|---|
-| D | `0x01` | Declarative | a gov record carries a named axiom |
-| E | `0x02` | Evidential | the ledger is fresh (a recent beat) |
-| T | `0x04` | Transparent | the ledger streams a plan (the road is visible) |
-| R | `0x08` | Reproducible | the seed regrows (gov ∧ registry resolve) |
-| O | `0x10` | Operational | the last event is recent (the walk is live) |
-| S | `0x20` | Structural | the chain verifies ∧ the category is in the ontology |
-| L | `0x40` | Linguistic | the chain is VALID ∧ it has learned |
-| LANG | `0x80` | Language | a record carries a formal natural-language binding |
-
-**min-LOG ≡ max-GOV ≡ 255.** The fixed point is a full byte. You cannot remove a bit
-from a contract that *is* the fixed point — the comments compile away, the bit-slots
-do not. Some bits decay on attention's clock (E, O): the byte is re-earned every
-window, never owned.
-
-## Pure gov projection
-
-[`src/canonic.c`](src/canonic.c) is **not written by hand — ever**. It is a
-byte-identical projection of a hash-sealed record on the CANONIC chain (the kernel
-rides inside `magic.sov` as the first record of its C chain — the easter egg: decode
-the OS's own distribution container and you are holding the open kernel that boots
-it, source repo not required).
-
-The [`PROJECTION`](PROJECTION) file pins the SHA-256 of the projected source and its
-chain coordinates. CI recomputes it on every push: **a hand edit to the kernel fails
-the gate by construction.** On a CANONIC box, `./project.sh <magic.sov>` is the only
-legitimate writer.
-
-## Build
+`canonic.sov` is a tar.gz holding a manifest and one hash chain in which **every file
+of the project is a sealed record**, chained by the kernel's own law —
+`SHA256(prev ++ content)`, genesis all-zeros — with the 56-line CANONIC kernel itself
+as record zero. File trees are *projections* of this sov, regrown on demand:
 
 ```sh
-make test    # build + run the e2e proof
-make gate    # projection purity, then the proof
+./regrow.sh --into grown     # sov chain: VALID · projection: REGROWN (12 files)
+cd grown && make gate        # purity OK · VALID · tamper caught · 255/255 · ALL GATES PASS
 ```
 
-- **Apple silicon / macOS** — builds natively against CommonCrypto, untouched.
-- **Anywhere else** — same untouched kernel; `make` maps the one borrowed primitive
-  to OpenSSL via [`compat/`](compat/CommonCrypto/CommonDigest.h) (`-lcrypto`).
+CI does exactly that on every push, on ubuntu and macos: **8 KB in, a fully gated
+build out.** The sov is sufficient; everything else is hospitality.
 
-CI runs all three gates: [purity](.github/workflows/gates.yml) (ubuntu), the chip
-(macos, native), anywhere (ubuntu, shim).
+## The branches — every projection is a branch
 
-## The split
+| branch | what it is |
+|---|---|
+| **`main`** | the trunk: the sov + the regrow gate. Sov code. |
+| [**`projection/src`**](../../tree/projection/src) | the C-tree lens — the sov regrown into browsable files, CI-gated **EXACT** against the sov (any drift between tree and sov fails the build) |
 
-**CANONIC is the kernel** — the paradigm, the outside looking in (∩), pure bitwise
-encoding of governance, open, this repo. **MAGIC is the runtime** — mint and evolve,
-sovereign on Apple silicon, gated. The kernel is sufficient to *verify* everything
-the runtime does: `seal ∘ verify ∘ gov` is all the stream needs from below. The
-inversion is deliberate: normally the kernel is the crown jewel; here the kernel is
-the invitation, and the moat is the chip.
+Change flows **sov → branch**, never branch → sov. A future face (a Go client, a TS
+verifier) lands as another `projection/*` branch regrown from its own chain.
+
+## The kernel (record zero)
+
+**56 lines of code · 3 operations · 1 byte · 0 bytes of state — 492 bytes of ARM64.**
+`canonic_seal` (hash = SHA256(prev ++ formal)) · `canonic_verify` (fold the chain,
+reseal every link) · `canonic_gov` (OR proven chain-facts into the one-byte ABI:
+D E T R O S L LANG, frozen — min-LOG ≡ max-GOV ≡ 255; you cannot remove a bit from a
+contract that *is* the fixed point). Browse it on
+[`projection/src`](../../tree/projection/src) or regrow it yourself from the sov.
+
+**Open gov, not necessarily open source**: the kernel is the open paradigm anyone can
+verify against; the runtime it boots (Magic OS — mint and evolve, sovereign on Apple
+silicon) stays gated on the chip. The kernel is the invitation; the moat is the chip.
 
 ## License
 

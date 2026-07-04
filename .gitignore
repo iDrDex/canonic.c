@@ -1,3 +1,4 @@
 *.o
 selftest
 .DS_Store
+grown/
