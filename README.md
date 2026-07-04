@@ -1,5 +1,7 @@
 # canonic.c ∩ — sov code, not source code
 
+![gates](https://github.com/iDrDex/canonic.c/actions/workflows/gates.yml/badge.svg)
+
 **This branch carries no source tree. The artifact is [`canonic.sov`](canonic.sov) —
 ~8 KB that regrows, builds, and proves the entire project.**
 
