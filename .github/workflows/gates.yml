@@ -1,0 +1,24 @@
+name: gates
+on: [push, pull_request]
+
+jobs:
+  purity:
+    name: "purity — src/ is the chain projection"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: grep -v '^#' PROJECTION | sha256sum -c -
+
+  chip:
+    name: "the chip — native CommonCrypto"
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
+
+  anywhere:
+    name: "anywhere — OpenSSL shim, kernel untouched"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test

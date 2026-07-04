@@ -1,0 +1,9 @@
+# PURE GOV PROJECTION — src/canonic.c is a byte-identical projection of a chain
+# nano, never hand-edited. This pin IS the gate: `make gate` recomputes the hash
+# and refuses any drift. To update legitimately, re-project from a magic.sov on
+# a CANONIC box (./project.sh <magic.sov>) — the chain writes the kernel, not us.
+#
+# chain coordinates: magic.sov → c.chain seq 0
+#   nano hash 52787811f14116212f3b320baa968a76b5bf5e8d716ee752b5773d09ec9ca351
+#   sov head  b907be3e623f
+8648bdd245d654984f019a1fd65b6b58b21a281ad396753b53c6af4e466b3406  src/canonic.c
