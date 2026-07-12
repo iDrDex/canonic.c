@@ -1,0 +1,49 @@
+#!/bin/sh
+# ATOM: KILN — the CODEC: the LN encoder that encodes ⟷ decodes knowledge ↔ λ-nano. BIND (b1·E).
+# the codec — knowledge interface lambda nano: encodes ⟷ decodes knowledge ↔ λ-nano (decompose → normalization); the manifest is the registry library (jsonl).
+# encode — BIND, the full LN# act. in a crypto world, # everything.  LN# ≡ sha256(prev+formal).
+#
+# LN# is one of the four kernel primitives (SOV · GOV · LN# · QED); the language has no
+# keyword beyond the four, so the ENCODE step keeps the primitive's name — encoding is just
+# the FULL LN#: # every leaf AND store its blob at that #, so the content-address is truly
+# reversible (the KILN onboards a corpus by ENCODING it into the LN space — CANON A10).
+#
+# encode:
+#   1. swarm HW SHA-256 (sha256sum, Apple-Silicon FEAT_SHA256, ~4x perl) over EVERY leaf under
+#      the pure form /bin /src /SOV, fanned across every core.
+#   2. STORE each leaf's blob into the CAS at ~/forge/cas/objects/<#> (content-addressed,
+#      immutable, dedup'd) so the manifest can later be DECODED back to bytes.
+#   3. write a sorted manifest and fold it: root = sha256(prev_HEAD ++ manifest_hash).
+#
+# the chain's own bookkeeping (HEAD, closure/*) is excluded so the root reproduces cold.
+# SINGLE-WRITER: this NEVER advances HEAD — the orchestrator writes HEAD after it attests.
+set -u
+ROOT="$HOME/.canonic"; LED="$ROOT/SOV/LEDGER"
+CAS="$HOME/forge/cas/objects"
+CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 8)
+mkdir -p "$LED/closure" "$CAS"
+export CAS
+MAN="$(mktemp)"
+
+# swarm: for EVERY leaf, # it (HW SHA) AND store its blob into the CAS, in one parallel pass.
+# emits "<#>  <path>" per leaf; sort for a deterministic manifest.
+( cd "$ROOT" && find bin src SOV libexec -type f \
+    ! -path 'SOV/LEDGER/HEAD' ! -path 'SOV/LEDGER/closure/*' -print0 \
+  | xargs -0 -P "$CORES" -n1 sh -c '
+      h=$(sha256sum "$1" | cut -c1-64)
+      o="$CAS/$h"
+      [ -s "$o" ] || cp "$1" "$o"          # store blob at its content-address (immutable dedup)
+      printf "%s  %s\n" "$h" "$1"
+    ' _ ) | sort -k2 > "$MAN"
+
+N=$(wc -l < "$MAN" | tr -d ' ')
+MH=$(sha256sum "$MAN" | cut -d' ' -f1)
+PREV="$(cat "$LED/HEAD" 2>/dev/null | tr -d '[:space:]')"
+ROOTH="$(printf '%s%s' "$PREV" "$MH" | sha256sum | cut -d' ' -f1)"
+cp "$MAN" "$LED/closure/ln-$ROOTH.manifest"
+# binding witness: persist prev_HEAD so qed can re-fold HEAD==sha256(prev++MH) and prove the
+# manifest actually PRODUCED this HEAD (leaf-reproduce alone doesn't bind the manifest to HEAD).
+printf '%s\n' "$PREV" > "$LED/closure/ln-$ROOTH.bind"
+rm -f "$MAN"
+# NOTE: HEAD is deliberately NOT written here — single-writer, the orchestrator advances it.
+echo "ln (encode) · $N leaves → CAS · root $ROOTH"

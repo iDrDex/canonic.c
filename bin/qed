@@ -1,0 +1,72 @@
+#!/bin/sh
+# ATOM: CODON — the 8-bit MAGIC score; 255 = FULL. qed's byte IS the codon; CSBNRXEP the codex.
+# the codeword itself: the 8-bit magic score — 255 = full; every band measured, the byte is the codon.
+# qed — PROVE (the byte). QED = reproduce_cold ∧ SE_verify ("the type · anybody re-runs it").
+#   qed              → THE BYTE: 8 measured bands (CSBNRXEP), 0xFF or dark  [absorbs `canonic qed`]
+#   qed cold         → prove the CURRENT HEAD's LN# encode: re-# every manifest leaf + bind + SE
+#   qed nomen        → name purity + the 1:1 bin↔atom assertion (the N bit's own verb)
+#   qed qed://<#>    → prove ONE fold by address (reproduce_cold ∧ SE over the ##)
+# READ-ONLY w.r.t. the chain: never writes HEAD/ledger/closure (single-writer is nano/ln).
+# exit 0 = proven ; 1 = drift/dark ; 2 = honest off-road.
+set -u
+ROOT="$HOME/.canonic"; LED="$ROOT/SOV/LEDGER"
+case "${1:-}" in
+  "")    exec "$ROOT/libexec/canonic" qed ;;
+  nomen) exec "$ROOT/libexec/nomen" ;;
+  cold)  shift ;;   # fall through to the HEAD encode proof below
+esac
+
+# qed://<#> — prove ONE fold by address (R8, the scheme tree: magic:// broadcasts it,
+#   sov:// reveals it, qed:// PROVES it — same #, three views, no copies).
+#   proof = reproduce_cold (payload_hash == sha256(prev_hash ++ formal), re-derived here,
+#   trusting nothing but the bytes) ∧ SE_verify (the p256-se signature over the #).
+if [ -n "${1:-}" ]; then
+  h="${1#qed://}"; h="${h#magic://}"; h="${h#sov://}"
+  case "$h" in *[!0-9a-f]*|"") echo "usage: qed [qed://<#>]" >&2; exit 64 ;; esac
+  [ ${#h} -ge 8 ] || { echo "qed: give at least 8 # chars" >&2; exit 64; }
+  LEDJ="$HOME/forge/LEDGER/closure/events.jsonl"
+  ev=$(grep -m1 "\"payload_hash\":\"$h" "$LEDJ" 2>/dev/null)
+  [ -n "$ev" ] || { echo "qed · honest miss — # not on the chain (qed does not fabricate)"; exit 2; }
+  prev=$(printf '%s' "$ev" | jq -r .prev_hash); ph=$(printf '%s' "$ev" | jq -r .payload_hash)
+  formal=$(printf '%s' "$ev" | jq -j .payload.formal)
+  re=$(printf '%s%s' "$prev" "$formal" | sha256sum | cut -d' ' -f1)
+  [ "$re" = "$ph" ] && cold=ok || cold=FAIL
+  alg=$(printf '%s' "$ev" | jq -r .sig_alg); sig=$(printf '%s' "$ev" | jq -r .signature)
+  sev="none(legacy)"
+  if [ "$alg" != "none" ] && [ -n "$sig" ] && [ -x "$ROOT/libexec/sesign" ]; then
+    if printf '%s' "$ph" | "$ROOT/libexec/sesign" verify "$sig" >/dev/null 2>&1; then sev="ok($alg)"; else sev="FAIL"; fi
+  fi
+  echo "qed://${ph%${ph#????????}}… · reproduce_cold=$cold · SE=$sev · prev=${prev%${prev#????????}}…"
+  if [ "$cold" = ok ] && [ "$sev" != FAIL ]; then echo "  ✓ QED"; exit 0; else echo "  ✗ QED FAILED"; exit 1; fi
+fi
+HEAD=$(cat "$LED/HEAD" 2>/dev/null | tr -d '[:space:]')
+[ -n "$HEAD" ] || { echo "qed · FAIL · no HEAD to prove"; exit 2; }
+MAN="$LED/closure/ln-$HEAD.manifest"
+[ -e "$MAN" ] || { echo "qed · off-tip · HEAD ${HEAD%${HEAD#????????}}… is a semantic fold, not an encode root — the honest off-road read; SEAL with 'encode' then 'nano <manifest#>' to reproduce cold"; exit 2; }
+bad=0; n=0
+while read -r want rel; do
+  n=$((n+1))
+  got=$(sha256sum "$ROOT/$rel" 2>/dev/null | cut -d' ' -f1)
+  [ "$want" = "$got" ] || { echo "  ✗ $rel"; bad=$((bad+1)); }
+done < "$MAN"
+MH=$(sha256sum "$MAN" | cut -d' ' -f1)   # the formal whose fold produced HEAD — witness the seal binds
+# BINDING: re-fold HEAD == sha256(prev_HEAD ++ MH) to prove this manifest PRODUCED this HEAD.
+# leaf-reproduce alone does NOT bind the manifest to HEAD — a swapped valid-leaf manifest would pass.
+# legacy manifests (no .bind sidecar from pre-fix ln) are tolerated as bind=legacy (hash-repro stands).
+BIND="$LED/closure/ln-$HEAD.bind"; bindv="legacy"
+if [ -f "$BIND" ]; then
+  bp=$(cat "$BIND" 2>/dev/null | tr -d '[:space:]')
+  br=$(printf '%s%s' "$bp" "$MH" | sha256sum | cut -d' ' -f1)
+  [ "$br" = "$HEAD" ] && bindv="ok" || bindv="FAIL"
+fi
+# SE_verify half of the header's "QED = reproduce_cold ∧ SE_verify": verify HEAD was SE-signed.
+# sidecar absent OR alg=none -> legacy HEAD, reproduce_cold alone still stands (the historical tips).
+SESIGN="${SESIGN:-$ROOT/libexec/sesign}"; severd="none(legacy)"
+if [ -x "$SESIGN" ] && [ -f "$LED/HEAD.sig" ]; then
+  read -r sa sg < "$LED/HEAD.sig"
+  if [ "$sa" != "none" ] && [ -n "$sg" ]; then
+    if printf '%s' "$HEAD" | "$SESIGN" verify "$sg" >/dev/null 2>&1; then severd="ok($sa)"; else severd="FAIL"; fi
+  fi
+fi
+echo "qed · $n leaves re-#'d · $bad mismatch · bind=$bindv · SE $severd · manifest ${MH%${MH#????????}}… · HEAD ${HEAD%${HEAD#????????}}…"
+if [ "$bad" -eq 0 ] && [ "$bindv" != "FAIL" ] && [ "$severd" != "FAIL" ]; then echo "  ✓ QED — reproduces cold ∧ bind ∧ SE_verify"; exit 0; else echo "  ✗ QED FAILED"; exit 1; fi

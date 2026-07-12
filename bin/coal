@@ -1,0 +1,801 @@
+#!/bin/sh
+# ATOM: INTEL — the MCI/knowledge engine; the index IS the intel face. BEAT (b5·B) lives here.
+# the intel face: the MCI engine — knowledge coalesced into the λ-registry; one of the three faces of the one conserved primitive.
+# coal — DERIVED recall sidecar (never writes the chain). Chunk each NANO fold into atomic
+# clauses + a BM25 inverted index, so a single distinctive clause surfaces its fold regardless of
+# the omnibus doc's length — fixing bin/laude's un-normalized word-overlap length bias.
+# verbs:  coalesce build            (chip: re-index ~/forge/LEDGER over the live chain)
+#         coalesce recall <query>   (brain: BM25 max-chunk; laude-style attest line)
+# Validated /tmp/coalesce impl (chunk.pl+build_index.pl+q.pl); materialized verbatim.
+set -u
+ROOT="$HOME/.canonic"
+LED="$HOME/.canonic/LEDGER/closure/events.jsonl"; [ -f "$LED" ] || LED="$HOME/forge/LEDGER/closure/events.jsonl"
+IDXR="${COALESCE_IDXR:-$ROOT/index/coalesce}"; PARENTS="$IDXR/parents.tsv"; IDX="$IDXR/idx"
+verb="${1:-beat}"; shift 2>/dev/null || true
+
+case "$verb" in
+beat)
+  # THE BEAT is coalesce's default verb (the 8-verb kernel: coalesce = BEAT = the b5 bit).
+  # The engine's beat orchestrates: inc index catch-up + docs gating + pulse + fleet drain.
+  exec "$HOME/.canonic/libexec/canonic" beat ;;
+build)
+  # --inc (R6, the beat): append-index ONLY the events past .thru — fold -> recallable in one beat.
+  if [ "${1:-}" = "--inc" ]; then
+    # no index OR no .thru watermark -> full build (an inc from 0 would double-index the chain)
+    [ -s "$IDX/stats" ] && [ -s "$IDXR/.thru" ] || exec "$0" build
+    thru=$(cat "$IDXR/.thru" 2>/dev/null || echo 0)
+    total=$(wc -l < "$LED" | tr -d ' ')
+    [ "$total" -gt "$thru" ] || {
+      # on-tip: the docs tier is vacuously current too — wear the tip (the qed gap measure
+      # reads the stamp, and a gated rebuild no longer restamps every beat)
+      cat "$HOME/forge/LEDGER/HEAD" > "$ROOT/index/docs/.tip" 2>/dev/null
+      printf '%s\n' "$total" > "$ROOT/index/docs/.thru" 2>/dev/null
+      echo "coalesce inc: on-tip ($total)"; exit 0; }
+    NEW=$(mktemp)
+    tail -n +"$((thru+1))" "$LED" | jq -rc 'select((.payload_hash? // "" | length) == 64) | [ .payload_hash, (.payload.formal // (.payload | del(.category?) | tostring)) ] | @tsv' > "$NEW"
+    # NATIVE SOV (R8): CAS-decode ##-folds in NEW too (same as full build) so coverage sees prose
+    perl -e 'my($pf)=@ARGV; open my $P,"<",$pf or die; my @o;
+      while(<$P>){ chomp; my($h,$f)=split/\t/,$_,2; next unless defined $f;
+        if($f=~/^#(?:chat|fs|mem|doc|law|axiom|vocab|kernel|lang|alias|decomp|runtime|anchor|ln|ATOMIC)\b/ && $f=~/\|\s*([0-9a-f]{64})$/){ my $c="$ENV{HOME}/forge/cas/objects/$1";
+          if(-f $c){ local $/; open my $C,"<",$c; my $p=<$C>; close $C; $p=~s/\s+/ /g; $f=~s/[0-9a-f]{64}$//; $f.=$p; } }
+        push @o,"$h\t$f\n"; } close $P; open my $W,">",$pf or die; print $W @o; close $W;' "$NEW"
+    if [ -s "$NEW" ]; then
+      pbase=$(wc -l < "$PARENTS" | tr -d ' ')
+      cat "$NEW" >> "$PARENTS"
+      # chunk + append postings/meta + merge df + refresh stats (same algebra as full build)
+      perl /dev/stdin "$NEW" "$pbase" "$IDXR" <<'PL'
+use strict; use warnings; my($nf,$pbase,$idxr)=@ARGV; my $dir="$idxr/idx";
+sub toks{ my $s=lc(shift); $s=~s/[^a-z0-9]+/ /g; grep{length} split / /,$s }
+my %stats; open my $S,'<',"$dir/stats"; while(<$S>){chomp;my($k,$v)=split/=/;$stats{$k}=$v} close $S;
+my $N=$stats{N}; my $tot=$stats{avg}*$N;
+my %df; open my $D,'<',"$dir/df.tsv"; while(<$D>){chomp;my($t,$c)=split/\t/;$df{$t}=$c} close $D;
+open my $NF,'<',$nf or die; open my $POST,'>>',"$dir/post.tail"; open my $META,'>>',"$dir/meta.tsv";
+my $pidx=$pbase; my $MIN=24; my $MAX=320; my $cadd=0;
+while(my $line=<$NF>){ chomp $line; $pidx++; my($h,$formal)=split/\t/,$line,2; next unless defined $formal;
+  my $t=$formal; $t=~s/\s+/ /g; $t=~s/^\s+//; $t=~s/\s+$//;
+  # prose IS #: a ##-fold (#chat/#fs ... | <64hex>) carries its prose in the CAS — index THAT,
+  # keyed to the chain ## ($h). The chain stays pure #; the brain reads the prose it addresses.
+  if($t=~/^#(?:chat|fs|mem|doc|law|axiom|vocab|kernel|lang|alias|decomp|runtime|anchor|ln|ATOMIC)\b/ && $t=~/\|\s*([0-9a-f]{64})$/){ my $c="$ENV{HOME}/forge/cas/objects/$1";
+    if(-f $c){ local $/; open my $C,'<',$c; my $p=<$C>; close $C; $p=~s/\s+/ /g; $t=~s/[0-9a-f]{64}$//; $t.=$p; } }
+  my @raw=split /(?<=[.;!?])\s+|\n|\s+[\x{2014}\x{2013}]\s+|\s+-\s+/, $t; my @chunks; my $buf="";
+  for my $seg (@raw){ $seg=~s/^\s+//; $seg=~s/\s+$//; next if $seg eq "";
+    if(length($buf)==0){$buf=$seg} elsif(length($buf)<$MIN){$buf.=" ".$seg} else{push @chunks,$buf;$buf=$seg} }
+  push @chunks,$buf if length($buf); my @out;
+  for my $ch (@chunks){ while(length($ch)>$MAX){push @out,substr($ch,0,$MAX);$ch=substr($ch,$MAX)} push @out,$ch if length($ch) }
+  @out=($t) unless @out;
+  for my $ch (@out){ $N++; $cadd++; my @tk=toks($ch); my %tf; $tf{$_}++ for @tk; my $dl=@tk; $tot+=$dl;
+    print $META "$N\t$pidx\t$dl\n"; for my $w (keys %tf){ $df{$w}++; print $POST "$w\t$N\t$tf{$w}\n" } } }
+close $POST; close $META;
+open my $DO,'>',"$dir/df.tsv"; print $DO "$_\t$df{$_}\n" for keys %df; close $DO;
+open my $SO,'>',"$dir/stats"; printf $SO "N=%d\navg=%s\n",$N,($N?$tot/$N:0); close $SO;
+print STDERR "inc: +$cadd chunks (N=$N)\n";
+PL
+      # SUPERSESSION RIDES THE INC (P3): a re-folded NAMED knowledge fold is a REGISTER write —
+      # the fossil's parent record is TOMBSTONED in place (bake -tomb pokes one byte) and logged
+      # in idx/tombs so every future bake re-applies it. The chain keeps both folds (append-only);
+      # the read path answers with the latest binding only. Keyed exactly like supersede_names.
+      NN=$(mktemp)
+      LC_ALL=C awk -F'\t' -v base="$pbase" '{ f=$2; key=""
+          if (f ~ /^#(law|axiom|vocab|kernel|decomp|lang) [^|]+\|/) { split(f,a,"|"); key="N:" a[1] }
+          else if (f ~ /^#alias .* = /) { split(f,a," = "); key="A:" a[1] }
+          if (key!="") printf "%s\t%d\n", key, base+NR }' "$NEW" > "$NN"
+      if [ -s "$NN" ]; then
+        touch "$IDX/names.tsv"
+        FOS=$(awk -F'\t' 'NR==FNR{new[$1]=1;next} ($1 in new){print $2}' "$NN" "$IDX/names.tsv")
+        if [ -n "$FOS" ]; then
+          printf '%s\n' "$FOS" >> "$IDX/tombs"
+          "$ROOT/libexec/bake" -tomb "$IDX" $FOS >/dev/null 2>&1 || true
+        fi
+        awk -F'\t' 'NR==FNR{new[$1]=1;next} !($1 in new)' "$NN" "$IDX/names.tsv" > "$IDX/names.tsv.tmp"
+        cat "$NN" >> "$IDX/names.tsv.tmp"; mv "$IDX/names.tsv.tmp" "$IDX/names.tsv"
+      fi
+      rm -f "$NN"
+    fi
+    # SEMANTIC TIER STAYS ON-TIP (chip.chain.brain): embed each new fold -> transform -> append
+    # raw + lensed rows + LSH bucket lines. The brain grows one beat at a time, never a rebuild.
+    ND="$ROOT/index/nanodex"; NDC="$ROOT/index/nanodexc"
+    if [ -s "$NEW" ] && [ -s "$ND/nanodex.bin" ] && [ -x "$ROOT/libexec/embed" ]; then
+      perl /dev/stdin "$NEW" "$ND" "$NDC" "$ROOT/libexec/embed" <<'PL' || true
+use strict; use warnings;
+my($nf,$ND,$NDC,$EMBED)=@ARGV;
+open my $MF,'<',"$ND/nanodex.mean" or exit; my @mu=split / /,<$MF>; close $MF;
+open my $EF,'<',"$ND/nanodex.eig" or exit;  my @ev=split / /,<$EF>; close $EF;
+my $d=@mu;
+my (@E,@drop);
+if(-s "$NDC/lens.pcs" && -s "$NDC/lens.drop"){
+  open my $PC,'<',"$NDC/lens.pcs"; while(<$PC>){chomp; push @E,[split / /]} close $PC;
+  open my $DR,'<',"$NDC/lens.drop"; my $dl=<$DR>//''; chomp $dl; @drop=grep{length}split / /,$dl; close $DR;
+}
+my %st; open my $S,'<',"$ND/stats"; while(<$S>){chomp;my($k,$v)=split/=/;$st{$k}=$v} close $S;
+my $r0=$st{rows};
+open my $NF2,'<:raw',$nf or exit; my (@H,@T);
+while(<$NF2>){ chomp; my($h,$t)=split /\t/,$_,2; next unless defined $t && $h=~/^[0-9a-f]{64}$/;
+  $t=substr($t,0,1200); $t=~s/\x0/ /g; push @H,$h; push @T,$t }
+close $NF2; exit unless @H;
+open my $EP,'|-',"$EMBED > '$ND/.inc.vec' 2>/dev/null" or exit;
+print $EP "$_\0" for @T; close $EP;
+open my $VF,'<',"$ND/.inc.vec" or exit; my @V=<$VF>; chomp @V; close $VF; unlink "$ND/.inc.vec";
+open my $HO,'>>',"$ND/nanodex.hash"; open my $BO,'>>:raw',"$ND/nanodex.bin";
+my $LB; my $LL; my($L,$B)=(10,12);
+if(-s "$ND/nanodex.lens.bin"){ open $LB,'>>:raw',"$ND/nanodex.lens.bin"; open $LL,'>>',"$ND/nanodex.lsh" }
+my $added=0;
+for my $i (0..$#H){
+  my $v=$V[$i]//''; next if $v eq 'MISS' || $v!~/ /;
+  my @w=split / /,$v; next unless @w==$d;
+  $w[$_]-=$mu[$_] for 0..$d-1;
+  my $dp=0; $dp+=$w[$_]*$ev[$_] for 0..$d-1; $w[$_]-=$dp*$ev[$_] for 0..$d-1;
+  my $nn=0;$nn+=$_*$_ for @w;$nn=sqrt($nn)||1;$_/=$nn for @w;
+  print $HO "$H[$i]\n"; print $BO pack("f*",@w); my $ri=$r0+$added; $added++;
+  if($LB){
+    my @z=@w;
+    for my $j (@drop){ my $ej=$E[$j]; my $dp2=0; $dp2+=$z[$_]*$ej->[$_] for 0..$d-1; $z[$_]-=$dp2*$ej->[$_] for 0..$d-1 }
+    my $n2=0;$n2+=$_*$_ for @z;$n2=sqrt($n2)||1;$_/=$n2 for @z;
+    print $LB pack("f*",@z);
+    for my $t (0..$L-1){ my $key=0;
+      for my $j (0..$B-1){ my $pi=$t*$B+$j; my $dp3=0;
+        for my $ii (0..$d-1){ my $hh=($pi*2654435761 + $ii*40503 + 0x5CA1AB1E) % 0xFFFFFFFF;
+          $dp3 += $z[$ii] * ((($hh>>16)&1)?1:-1) }
+        $key=($key<<1)|($dp3>=0?1:0) }
+      print $LL "$t:$key $ri\n" }
+  }
+}
+close $HO; close $BO; $LB and close $LB; $LL and close $LL;
+open my $SO,'>',"$ND/stats"; printf $SO "rows=%d\ndim=%d\nmiss=%d\n",$r0+$added,$d,$st{miss}//0; close $SO;
+print STDERR "inc-nanodex: +$added rows\n";
+PL
+    fi
+    # DELTA TAIL (P1, kills the per-fold 141MB sort): postings append to idx/post.tail; the native
+    # reader scans the tail linearly alongside the term.off seeks, so a fresh fold is recallable
+    # THIS beat with NO re-sort. compact (merge tail -> post.sorted, regen term.off) runs only
+    # when the tail crosses the threshold — backgrounded, locked, atomic.
+    if [ -f "$IDX/post.tail" ] && [ "$(wc -c < "$IDX/post.tail" | tr -d ' ')" -gt "${COALESCE_TAILMAX:-16777216}" ]; then
+      ( "$0" compact >/dev/null 2>&1 & )
+    fi
+    # DOCS TIER RIDES THE INC (P1, kills the per-fold full-ledger jq): only when a KNOWLEDGE fold
+    # actually landed (or the docs tier is absent) does the tiny docs index rebuild — from its own
+    # ~200-line parents surface merged with the new knowledge lines, never from the 141MB ledger.
+    # Foreground: a tiny index must never be raced (the 2026-07-12 torn-docs scar).
+    tab=$(printf '\t')
+    if [ ! -s "$ROOT/index/docs/idx/stats" ] || grep -qE "${tab}#(law|axiom|vocab|kernel|alias|decomp|lang|ATOMIC)" "$NEW" 2>/dev/null; then
+      dmerge=$(mktemp)
+      cat "$ROOT/index/docs/parents.tsv" 2>/dev/null > "$dmerge"
+      grep -E "${tab}#(law|axiom|vocab|kernel|alias|decomp|lang|ATOMIC)" "$NEW" >> "$dmerge" 2>/dev/null || true
+      COALESCE_IDXR="$ROOT/index/docs" COALESCE_SCOPE=docs COALESCE_FROM="$dmerge" "$0" build >/dev/null 2>&1 || true
+      rm -f "$dmerge"
+    else
+      # VACUOUSLY CURRENT: no knowledge fold landed, so the docs tier's CONTENT is already at
+      # tip — stamp it so the qed gap measure sees the truth (the old per-beat rebuild stamped
+      # every beat; a gated rebuild must still wear the tip it reflects).
+      cat "$HOME/forge/LEDGER/HEAD" > "$ROOT/index/docs/.tip" 2>/dev/null
+      printf '%s\n' "$total" > "$ROOT/index/docs/.thru" 2>/dev/null
+    fi
+    rm -f "$NEW"
+    cat "$HOME/forge/LEDGER/HEAD" > "$IDXR/.tip" 2>/dev/null   # THE SOV BIT (inc path too)
+    printf '%s\n' "$total" > "$IDXR/.thru"
+    echo "coalesce inc: indexed thru $total"
+    exit 0
+  fi
+  mkdir -p "$IDX"
+  # STAGED + LOCKED, PUBLISHED ATOMICALLY (the torn-index scar, 2026-07-12): every fold beats a
+  # docs rebuild, and this jq dumps the FULL ledger before the scope filter runs — a reader
+  # (laude tier-0) catching that window saw a 71k-line unscoped parents.tsv; two OVERLAPPING
+  # builds sharing one staging path then published each other's empties (parents=0). So:
+  # ONE builder per IDXR (mkdir lock — losers skip, the next beat converges freshness),
+  # $$-unique staging, and readers only ever see a complete surface via atomic mv.
+  BLOCK="$IDXR/.build.lock"
+  if ! mkdir "$BLOCK" 2>/dev/null; then echo "coalesce build: another builder holds $BLOCK, skipping" >&2; exit 0; fi
+  trap 'rmdir "$BLOCK" 2>/dev/null' EXIT INT TERM
+  STG="$PARENTS.new.$$"; DSTG=""
+  # parents: payload_hash \t formal  (one NANO per line; @tsv escapes embedded tabs/newlines)
+  # COALESCE_FROM (P1): build from a supplied parents-format surface instead of scanning the full
+  # ledger — the docs tier refreshes from its own ~200 lines + the beat's new knowledge folds.
+  if [ -n "${COALESCE_FROM:-}" ] && [ -f "$COALESCE_FROM" ]; then
+    cat "$COALESCE_FROM" > "$STG"
+  else
+    jq -rc 'select((.payload_hash? // "" | length) == 64) | [ .payload_hash, (.payload.formal // (.payload | del(.category?) | tostring)) ] | @tsv' "$LED" > "$STG"
+  fi
+  # SUPERSESSION (the matmul-fossil scar): a NAMED knowledge fold is a REGISTER — '#law x | …'
+  # re-folded means the old binding is superseded. The chain keeps both (append-only, SOT);
+  # the DERIVED knowledge index carries only the LATEST per name, or the fossil outranks the
+  # fresh fold on bm25 length-norm forever. Keyed on '#tag name |' and '#alias lhs ='; unnamed
+  # folds pass through untouched. Ledger order = chronological, so last line wins.
+  supersede_names() {
+    awk -F'\t' '{ f=$2; key=""
+        if (f ~ /^#(law|axiom|vocab|kernel|decomp|lang) [^|]+\|/) { split(f,a,"|"); key="N:" a[1] }
+        else if (f ~ /^#alias .* = /)                            { split(f,a," = "); key="A:" a[1] }
+        else key="H:" NR
+        if (!(key in ord)) ord[key]=++n
+        line[key]=$0 }
+      END { for (k in ord) out[ord[k]]=line[k]; for (i=1;i<=n;i++) if (i in out) print out[i] }'
+  }
+  # SCOPE BEATS SIZE: COALESCE_SCOPE=docs builds THE NANO DOCS index — only the KNOWLEDGE folds
+  # (law · axiom · vocab · kernel · alias · decomp ≈ 174) instead of the full 196k. The knowledge
+  # is 1.4% of the corpus; BM25 over everything drowns each law in the 12k chat transcripts that
+  # merely MENTION it. laude asks THIS index first. (the "what is the fold" → transcript scar)
+  if [ "${COALESCE_SCOPE:-}" = docs ]; then
+    tab=$(printf '\t')
+    grep -E "${tab}#(law|axiom|vocab|kernel|alias|decomp|lang|ATOMIC)" "$STG" > "$STG.d" || : > "$STG.d"
+    supersede_names < "$STG.d" > "$STG"
+    rm -f "$STG.d"
+  fi
+  # NATIVE SOV (R8): CAS-decode ##-folds IN parents.tsv so bm25.c's coverage floor sees the PROSE
+  # (prefix retained -> public gate still strips; chain stays pure #, the derived index carries prose).
+  perl -e 'my($pf)=@ARGV; open my $P,"<",$pf or die; my @o;
+    while(<$P>){ chomp; my($h,$f)=split/\t/,$_,2; next unless defined $f;
+      if($f=~/^#(?:chat|fs|mem|doc|law|axiom|vocab|kernel|lang|alias|decomp|runtime|anchor|ln|ATOMIC)\b/ && $f=~/\|\s*([0-9a-f]{64})$/){ my $c="$ENV{HOME}/forge/cas/objects/$1";
+        if(-f $c){ local $/; open my $C,"<",$c; my $p=<$C>; close $C; $p=~s/\s+/ /g; $f=~s/[0-9a-f]{64}$//; $f.=$p; } }
+      push @o,"$h\t$f\n"; } close $P; open my $W,">",$pf or die; print $W @o; close $W;' "$STG"
+  # ── THE NANO DOCS (scope beats size): a SECOND, tiny corpus of only the KNOWLEDGE folds —
+  # law · axiom · vocab · kernel · alias · decomp (~174, vs 12k chat = the knowledge is 1.4%).
+  # laude searches THIS first; the full corpus is the fallback. Without it, BM25 drowns every
+  # law in the chatter that merely mentions it (the "what is the fold" → a transcript scar).
+  DOCS="$IDXR/parents-docs.tsv"; DSTG="$DOCS.new.$$"
+  grep -E "$(printf '\t')#(law|axiom|vocab|kernel|alias|decomp|lang|ATOMIC)" "$STG" 2>/dev/null \
+    | supersede_names > "$DSTG" || : > "$DSTG"
+  perl -e 'my($pf)=@ARGV; open my $P,"<",$pf or die; my @o;
+    while(<$P>){ chomp; my($h,$f)=split/\t/,$_,2; next unless defined $f;
+      if($f=~/\|\s*([0-9a-f]{64})\s*$/){ my $c="$ENV{HOME}/forge/cas/objects/$1";
+        if(-f $c){ local $/; open my $C,"<",$c; my $p=<$C>; close $C; $p=~s/\s+/ /g; $f=~s/[0-9a-f]{64}\s*$//; $f.=$p; } }
+      push @o,"$h\t$f\n"; } close $P; open my $W,">",$pf or die; print $W @o; close $W;' "$DSTG"
+  # PUBLISH (atomic, same fs): readers only ever see a complete parents/docs surface.
+  mv "$DSTG" "$DOCS"
+  mv "$STG" "$PARENTS"
+  # NAME REGISTRY + TOMBS (P3): rebuilt from zero with the surface (line indices changed).
+  # names.tsv: key -> LATEST parent line; tombs: every superseded (fossil) line, consumed by bake.
+  LC_ALL=C awk -F'\t' -v names="$IDX/names.tsv.tmp" -v tombs="$IDX/tombs.tmp" 'BEGIN{ printf "" > tombs }
+    { f=$2; key=""
+      if (f ~ /^#(law|axiom|vocab|kernel|decomp|lang) [^|]+\|/) { split(f,a,"|"); key="N:" a[1] }
+      else if (f ~ /^#alias .* = /) { split(f,a," = "); key="A:" a[1] }
+      if (key!="") { if (key in last) print last[key] >> tombs; last[key]=NR } }
+    END{ for (k in last) printf "%s\t%d\n", k, last[k] > names }' "$PARENTS" 2>/dev/null || true
+  mkdir -p "$IDX"; mv -f "$IDX/names.tsv.tmp" "$IDX/names.tsv" 2>/dev/null; mv -f "$IDX/tombs.tmp" "$IDX/tombs" 2>/dev/null
+  echo "coalesce docs · $(wc -l < "$DOCS" | tr -d ' ') nano-docs (the knowledge scope)" >&2
+  cat "$HOME/forge/LEDGER/HEAD" > "$IDXR/.tip" 2>/dev/null   # THE SOV BIT: the surface stamps the HEAD it projects
+  wc -l < "$LED" | tr -d ' ' > "$IDXR/.thru"
+  np=$(wc -l < "$PARENTS" | tr -d ' ')
+  # chunk parents -> clauses
+  perl /dev/stdin "$PARENTS" "$IDXR/chunks.tsv" <<'PL'
+use strict; use warnings; my($pf,$cf)=@ARGV;
+open my $P,'<',$pf or die; open my $C,'>',$cf or die; my $cid=0; my $pidx=0; my $MIN=24; my $MAX=320;
+while(my $line=<$P>){ chomp $line; $pidx++; my($h,$formal)=split /\t/,$line,2; next unless defined $formal;
+  my $t=$formal; $t=~s/\s+/ /g; $t=~s/^\s+//; $t=~s/\s+$//;
+  # prose IS # (see --inc chunker): pull a ##-fold's prose from the CAS, index it under the chain #.
+  if($t=~/^#(?:chat|fs|mem|doc|law|axiom|vocab|kernel|lang|alias|decomp|runtime|anchor|ln|ATOMIC)\b/ && $t=~/\|\s*([0-9a-f]{64})$/){ my $c="$ENV{HOME}/forge/cas/objects/$1";
+    if(-f $c){ local $/; open my $CB,'<',$c; my $p=<$CB>; close $CB; $p=~s/\s+/ /g; $t=~s/[0-9a-f]{64}$//; $t.=$p; } }
+  $t=~s/\s+(\(\d+\))/\n$1/g;
+  my @raw=split /(?<=[.;!?])\s+|\n|\s+[\x{2014}\x{2013}]\s+|\s+-\s+/, $t; my @chunks; my $buf="";
+  for my $seg (@raw){ $seg=~s/^\s+//; $seg=~s/\s+$//; next if $seg eq "";
+    if(length($buf)==0){$buf=$seg} elsif(length($buf)<$MIN){$buf.=" ".$seg} else{push @chunks,$buf; $buf=$seg} }
+  push @chunks,$buf if length($buf); my @out;
+  for my $ch (@chunks){ while(length($ch)>$MAX){push @out,substr($ch,0,$MAX); $ch=substr($ch,$MAX)} push @out,$ch if length($ch) }
+  @out=($t) unless @out; for my $ch (@out){ $ch=~s/\t/ /g; $cid++; print $C "$cid\t$pidx\t$ch\n" } }
+close $C; print STDERR "chunks=$cid parents=$pidx\n";
+PL
+  # BM25 inverted index
+  perl /dev/stdin "$IDXR/chunks.tsv" "$IDX" <<'PL'
+use strict; use warnings; my($cf,$dir)=@ARGV; mkdir $dir unless -d $dir;
+sub toks{ my $s=lc(shift); $s=~s/[^a-z0-9]+/ /g; return grep{length} split / /,$s }
+open my $C,'<',$cf or die; open my $POST,'>',"$dir/post.tsv"; open my $META,'>',"$dir/meta.tsv";
+my %df; my $tot=0; my $n=0;
+while(<$C>){ chomp; my($id,$par,$tx)=split/\t/,$_,3; $n++; my @t=toks($tx//""); my %tf; $tf{$_}++ for @t; my $dl=@t; $tot+=$dl;
+  print $META "$n\t$par\t$dl\n"; for my $w (keys %tf){ $df{$w}++; print $POST "$w\t$n\t$tf{$w}\n" } }
+close $C; close $POST; close $META; open my $S,'>',"$dir/stats"; my $avg=$tot/($n||1); print $S "N=$n\navg=$avg\n"; close $S;
+open my $D,'>',"$dir/df.tsv"; print $D "$_\t$df{$_}\n" for keys %df; close $D;
+print STDERR "index: $n chunks, ",scalar(keys %df)," terms\n";
+PL
+  echo "coalesce built · parents=$np · $(cat "$IDX/stats" | tr '\n' ' ')"
+  # SEEK MAP RIDES THE BUILD (P1): a full build re-emits post.tsv from zero, so the sorted map is
+  # regenerated here, inline (the build already paid the big scan) — the beat never re-sorts.
+  "$0" hashx || true
+  ;;
+recall)
+  q="$*"; [ -n "$q" ] || { echo "coalesce recall <query>" >&2; exit 64; }
+  [ -s "$IDX/stats" ] || { echo "coalesce: no index (run: coalesce build)" >&2; exit 69; }
+  # SPECTRAL BFS (R5): embed the query on the ANE if the nanodex sidecar exists. embed MISS or
+  # nanodex absent -> QV empty -> lexical-only, EXPLICITLY labeled (fail-closed, never silent).
+  ND="$ROOT/index/nanodex"; QV=""
+  if [ -s "$ND/stats" ] && [ -x "$ROOT/libexec/embed" ] && [ -z "${LAUDE_RAW:-}" ]; then
+    qv=$(printf '%s\0' "$q" | "$ROOT/libexec/embed" 2>/dev/null | head -1)
+    case "$qv" in *' '*) QV="$qv" ;; esac
+  fi
+  K="${COALESCE_K:-1}" QVEC="$QV" NDX="$ND" NDC="$ROOT/index/nanodexc" LEDF="$LED" perl /dev/stdin "$IDX" "$PARENTS" "$q" <<'PL'
+use strict; use warnings; use Digest::SHA qw(sha256_hex); use MIME::Base64 qw(decode_base64);
+my($dir,$pf,$Q)=@ARGV; my $K=$ENV{K}||1; my $QV=$ENV{QVEC}//''; my $ND=$ENV{NDX}//''; my $LED=$ENV{LEDF}//'';
+sub toks{ my $s=lc(shift); $s=~s/[^a-z0-9]+/ /g; return grep{length} split / /,$s }
+my %stats; open my $S,'<',"$dir/stats"; while(<$S>){chomp; my($k,$v)=split/=/; $stats{$k}=$v} close $S;
+my $N=$stats{N}; my $avg=$stats{avg}; my %df; open my $D,'<',"$dir/df.tsv"; while(<$D>){chomp; my($t,$c)=split/\t/; $df{$t}=$c} close $D;
+my @par; my @dl; open my $M,'<',"$dir/meta.tsv"; while(<$M>){chomp; my($cl,$p,$l)=split/\t/; $par[$cl]=$p; $dl[$cl]=$l} close $M;
+my %qs; my @qk=grep{!$qs{$_}++} toks($Q); my %want; $want{$_}=1 for @qk; my $K1=1.2; my $B=0.75; my %best;
+# HASH-POWER PATH: if the term-offset map exists, SEEK only the query terms' postings (O(query))
+# instead of streaming all ~2.4M lines (O(corpus)). Falls back to full scan if the map is absent.
+if(-s "$dir/term.off" && -s "$dir/post.sorted"){
+  my %off; open my $TO,'<',"$dir/term.off" or die;
+  while(<$TO>){ chomp; my($t,$o,$l)=split/\t/; $off{$t}=[$o,$l] if $want{$t} } close $TO;
+  open my $PS,'<:raw',"$dir/post.sorted" or die;
+  for my $w (@qk){ next unless $off{$w}; my($o,$l)=@{$off{$w}}; seek($PS,$o,0); my $buf; read($PS,$buf,$l);
+    for my $line (split /\n/,$buf){ my($ww,$cl,$tf)=split/\t/,$line; next unless defined $tf;
+      my $idf=log(($N-$df{$w}+0.5)/($df{$w}+0.5)+1); my $s=$idf*($tf*($K1+1))/($tf+$K1*(1-$B+$B*$dl[$cl]/$avg)); $best{$cl}+=$s } }
+  close $PS;
+} else {
+  open my $P,'<',"$dir/post.tsv" or die; while(<$P>){ my($w,$cl,$tf)=split/\t/; chomp $tf; next unless $want{$w};
+    my $idf=log(($N-$df{$w}+0.5)/($df{$w}+0.5)+1); my $s=$idf*($tf*($K1+1))/($tf+$K1*(1-$B+$B*$dl[$cl]/$avg)); $best{$cl}+=$s } close $P;
+}
+my %pbest; for my $cl (keys %best){ my $p=$par[$cl]; $pbest{$p}=$best{$cl} if(!exists $pbest{$p}||$best{$cl}>$pbest{$p}) }
+open my $PF,'<',$pf; my @ph; my @pfm; my %h2p; my $i=0;
+while(<$PF>){chomp; my($h,$fm)=split/\t/,$_,2; $i++; $ph[$i]=$h; $pfm[$i]=$fm; $h2p{$h}=$i} close $PF;
+my @brank=sort{ $pbest{$b}<=>$pbest{$a} } keys %pbest;   # BM25 ranking (parent idx)
+# ---- SPECTRAL BFS on the lexical spine (R5): evidence-weighted — the exact signal GATES how far
+# the fuzzy frontier may wander. Strong BM25 (top>=8) = lexical wins, spectral only re-ranks its
+# candidates. Weak BM25 = attention fans wide (full manifold scan). Lexical exact match wins ties.
+my $sem=0; my (%cosr, @qx, $d, @NH); my $NDC=$ENV{NDC}//''; my $BIN="$ND/nanodex.bin"; my $lensed=0;
+if ($QV=~/ / && -s "$ND/nanodex.bin"){
+  my @qw=split / /,$QV;
+  open my $MF,'<',"$ND/nanodex.mean"; my @mu=split / /,<$MF>; close $MF;
+  open my $EF,'<',"$ND/nanodex.eig";  my @ev=split / /,<$EF>; close $EF;
+  $d=@mu;
+  if(@qw==$d){
+    $qw[$_]-=$mu[$_] for 0..$d-1;
+    my $dp=0; $dp+=$qw[$_]*$ev[$_] for 0..$d-1; $qw[$_]-=$dp*$ev[$_] for 0..$d-1;
+    # THE LEARNED LENS (chain-supervised): drop the style/noise PCs from the query too — the
+    # baked doc space (nanodex.lens.bin) and the query must share one geometry.
+    if(-s "$NDC/lens.pcs" && -s "$NDC/lens.drop" && -s "$ND/nanodex.lens.bin"){
+      open my $PC,'<',"$NDC/lens.pcs"; my @E; while(<$PC>){chomp; push @E,[split / /]} close $PC;
+      open my $DR,'<',"$NDC/lens.drop"; my $dl=<$DR>//''; chomp $dl; close $DR;
+      for my $j (grep{length}split / /,$dl){ my $ej=$E[$j]; my $dp2=0; $dp2+=$qw[$_]*$ej->[$_] for 0..$d-1; $qw[$_]-=$dp2*$ej->[$_] for 0..$d-1 }
+      $BIN="$ND/nanodex.lens.bin"; $lensed=1;
+    }
+    my $nn=0;$nn+=$_*$_ for @qw;$nn=sqrt($nn)||1;$_/=$nn for @qw;
+    @qx=@qw; open my $HF,'<',"$ND/nanodex.hash"; @NH=<$HF>; chomp @NH; close $HF; $sem=1;
+  }
+}
+my %hrow; if($sem){ $hrow{$NH[$_]}=$_ for 0..$#NH }
+my $btop = @brank ? $pbest{$brank[0]} : 0;
+my $conf = $btop>=16 ? 1 : $btop/16;                     # lexical evidence confidence (~3+ rare terms = strong)
+my %cand; my $r=0;
+for my $p (@brank){ last if $r++>=100; $cand{$ph[$p]}=1 if $ph[$p] }
+my $row=4*($d//0); my $BFH;
+sub cosof{ my $h=shift; return $cosr{$h} if exists $cosr{$h}; return 0 unless $sem && exists $hrow{$h};
+  unless($BFH){ open $BFH,'<:raw',$BIN or return 0 }
+  my $buf; sysseek($BFH,$hrow{$h}*$row,0); sysread($BFH,$buf,$row)==$row or return 0;
+  my @w=unpack("f$d",$buf); my $c=0; $c+=$w[$_]*$qx[$_] for 0..$d-1; $cosr{$h}=$c>0?$c:0; $cosr{$h} }
+if($sem && $conf<1){
+  # weak lexical spine -> BFS the manifold. ON-CHIP LSH when baked (bucket candidates only,
+  # ~100 exact cosines instead of 30k); full scan is the fallback for an unbaked index.
+  my @rows;
+  if($lensed && -s "$ND/nanodex.lsh"){
+    my($L,$B)=(10,12); my @keys;
+    for my $t (0..$L-1){ my $key=0;
+      for my $j (0..$B-1){ my $dp=0; my $pi=$t*$B+$j;
+        for my $i (0..$d-1){ my $hh=($pi*2654435761 + $i*40503 + 0x5CA1AB1E) % 0xFFFFFFFF;
+          $dp += $qx[$i] * ((($hh>>16)&1)?1:-1) }
+        $key=($key<<1)|($dp>=0?1:0) }
+      push @keys,"$t:$key" }
+    my $pat=join('|',map{quotemeta} @keys);
+    my %seen;
+    open my $LS,'-|',"grep -E '^($pat) ' '$ND/nanodex.lsh'" or die;
+    while(<$LS>){ chomp; my(undef,$r)=split / /; push @rows,$r unless $seen{$r}++ }
+    close $LS;
+  } else { @rows = 0..$#NH }
+  open my $BF,'<:raw',$BIN; my $buf; my @sc;
+  for my $ri (@rows){ sysseek($BF,$ri*$row,0); sysread($BF,$buf,$row)==$row or next;
+    my @w=unpack("f$d",$buf);
+    my $c=0; $c+=$w[$_]*$qx[$_] for 0..$d-1; push @sc,[$NH[$ri],$c] if $c>0 }
+  close $BF; my @top=sort{$b->[1]<=>$a->[1]} @sc;
+  for my $i (0..($#top>19?19:$#top)){ my($h,$c)=@{$top[$i]}; next unless $h2p{$h}; $cand{$h}=1; $cosr{$h}=$c }
+}
+my %fs;
+for my $h (keys %cand){
+  my $p=$h2p{$h}; my $bn = ($btop>0 && exists $pbest{$p}) ? $pbest{$p}/$btop : 0;
+  my $cw = $sem ? (1.3-$conf) : 0;                               # evidence reallocation: weak lexical -> the manifold speaks
+  $fs{$h} = $conf*0.7*$bn + $cw*cosof($h) + 1e-9*$bn;            # tie -> lexical wins
+}
+my @frank=sort{ $fs{$b}<=>$fs{$a} } keys %fs;
+unless(@frank){ print "laude: honest miss — nothing on the chain grounds that (coalesce)\n"; exit 0 }
+my $mode=$sem?sprintf("bm25+spec conf=%.2f",$conf):"bm25 (lexical-only)";
+my %rrf=%fs;   # keep downstream naming
+if($K==1){
+  # ---- LAMBDA DFS (attestation): the surfaced fold must PROVE its spine — sha256(prev++formal)==# .
+  # Unproven = dark, take the next candidate. Nothing surfaces unattested (0xFF-or-dark).
+  my $shown=0;
+  for my $c (0..($#frank>4?4:$#frank)){
+    my $h=$frank[$c]; next unless $h=~/^[0-9a-f]{64}$/;
+    my $tsv=qx(grep -m1 -F '"payload_hash":"$h"' '$LED' | jq -r '(.prev_hash//"") + " " + (((.payload.formal // (.payload | del(.category?) | tostring)) // "")|\@base64)');
+    chomp $tsv; my($prevh,$fb64)=split / /,$tsv,2;
+    next unless defined $fb64 && $prevh=~/^[0-9a-f]{64}$/;
+    my $formal=decode_base64($fb64);
+    next unless sha256_hex($prevh.$formal) eq $h;             # DFS spine fails -> dark
+    # HONESTY FLOOR (R6, recalibrated: reject NONSENSE, not TRUTH). Nonsense = weak fusion AND no
+    # overlap AND weak cos. A real query (even abstract/paraphrase) has EITHER real term-overlap OR a
+    # well-separated rank-1 OR a strong cos. Attest if ANY holds; miss only when ALL are weak.
+    my %ft; $ft{$_}=1 for toks($formal);
+    my @content=grep{ ($df{$_}//0) < $N/20 } @qk;
+    my $cov = @content ? (grep{$ft{$_}} @content)/@content : 1;
+    # rank-1 separation: fused score vs the field's runner-up. Nonsense = flat field (sep~1.0);
+    # a real query has real term-coverage OR a well-separated rank-1. Cos is NOT trusted (anisotropic
+    # manifold gives nonsense a false ~0.58 — that was the leak; the lens is ranking-only, not attest).
+    my $sep = ($c==0 && @frank>1 && $rrf{$frank[1]}>0) ? $rrf{$h}/$rrf{$frank[1]} : 1;
+    # compound floor (2026-07-10 burn wf_906efb04 caught cov=0.50 sep=1.07 spurious attest on
+    # 'purple elephant quantum cheese' — one common-token hit): strong coverage OR strong
+    # separation OR moderate-both; half-coverage alone with a flat field is nonsense.
+    unless ($cov>0.50 || $sep>=1.30 || ($cov>=0.30 && $sep>=1.15)){ next }   # all weak → honest miss
+    my $p=$h2p{$h}; my $fm=substr($pfm[$p]//"",0,260);
+    printf "laude attests (%s %.4f cov=%.2f sep=%.2f dfs=ok): %s\n", $mode, $rrf{$h}, $cov, $sep, $fm; $shown=1; last;
+  }
+  print "laude: honest miss — nothing on the chain grounds that (floor: coverage+cos)\n" unless $shown;
+}
+else { for my $r (0..$K-1){ last if $r>=@frank; my $h=$frank[$r]; my $p=$h2p{$h};
+  printf "#%d rrf=%.4f magic://%s :: %s\n", $r+1,$rrf{$h},substr($h,0,16), substr($pfm[$p]//"",0,90) } }
+PL
+  ;;
+hashx)
+  # HASH-POWER RECALL (bytewise agency): turn the O(corpus) postings SCAN into O(query-terms) SEEK.
+  # sort postings by term -> byte-offset map term->(offset,len). Recall seeks ONLY the query terms'
+  # spans instead of streaming all ~2.4M lines. The term IS the key; recall becomes hash-addressed.
+  # P1: post.tsv exists only right after a FULL build (the cold path). The steady state has no
+  # post.tsv — the inc appends to post.tail and hashx delegates to compact (merge, no full sort).
+  [ -s "$IDX/post.tsv" ] || exec "$0" compact
+  # ATOMIC (C10): sort→tmp, build offset-map from tmp→tmp, then mv both. A concurrent native recall
+  # never reads a half-written file (each mv is atomic); the native path also has a full-scan fallback.
+  LC_ALL=C sort -k1,1 -s "$IDX/post.tsv" > "$IDX/post.sorted.tmp"
+  perl -e '
+    my($in,$off)=@ARGV; open my $I,"<:raw",$in or die; open my $O,">",$off or die;
+    my $pos=0; my $cur=""; my $start=0;
+    while(my $l=<$I>){ my $t=substr($l,0,index($l,"\t"));
+      if($t ne $cur){ print $O "$cur\t$start\t",($pos-$start),"\n" if $cur ne ""; $cur=$t; $start=$pos }
+      $pos+=length($l); }
+    print $O "$cur\t$start\t",($pos-$start),"\n" if $cur ne "";
+  ' "$IDX/post.sorted.tmp" "$IDX/term.off.tmp"
+  mv "$IDX/post.sorted.tmp" "$IDX/post.sorted"; mv "$IDX/term.off.tmp" "$IDX/term.off"
+  # the sorted map now HOLDS every posting — post.tsv was only ever sort input (141MB duplicate),
+  # and any tail predates this full rebuild. Drop both; the inc regrows the tail from here.
+  rm -f "$IDX/post.tsv" "$IDX/post.tail" "$IDX/post.tail.c"
+  # BAKE (P2): refresh the mmap sidecars — the read path is open+mmap+seek, zero parse.
+  "$ROOT/libexec/bake" "$IDX" "$PARENTS" >/dev/null 2>&1 || true
+  echo "hashx · $(wc -l < "$IDX/term.off" | tr -d ' ') terms keyed · $(wc -c < "$IDX/post.sorted" | tr -d ' ') bytes seekable"
+  ;;
+compact)
+  # COMPACT (P1): fold the delta tail into the sorted map — sort ONLY the tail, then a linear
+  # sort -m merge (no 141MB re-sort, ever). Locked (one compactor), snapshot (post.tail.c stays
+  # readable by bm25 until the merge publishes), atomic (tmp+mv).
+  [ -s "$IDX/post.tail" ] || { echo "compact: no tail — nothing to fold"; exit 0; }
+  [ -s "$IDX/post.sorted" ] || { echo "compact: no post.sorted (run: coalesce build)" >&2; exit 69; }
+  CLOCK="$IDX/.compact.lock"
+  if ! mkdir "$CLOCK" 2>/dev/null; then echo "compact: another compactor holds $CLOCK, skipping" >&2; exit 0; fi
+  trap 'rmdir "$CLOCK" 2>/dev/null' EXIT INT TERM
+  mv "$IDX/post.tail" "$IDX/post.tail.c"
+  LC_ALL=C sort -k1,1 -s "$IDX/post.tail.c" > "$IDX/post.tail.sorted"
+  LC_ALL=C sort -m -k1,1 -s "$IDX/post.sorted" "$IDX/post.tail.sorted" > "$IDX/post.sorted.tmp"
+  perl -e '
+    my($in,$off)=@ARGV; open my $I,"<:raw",$in or die; open my $O,">",$off or die;
+    my $pos=0; my $cur=""; my $start=0;
+    while(my $l=<$I>){ my $t=substr($l,0,index($l,"\t"));
+      if($t ne $cur){ print $O "$cur\t$start\t",($pos-$start),"\n" if $cur ne ""; $cur=$t; $start=$pos }
+      $pos+=length($l); }
+    print $O "$cur\t$start\t",($pos-$start),"\n" if $cur ne "";
+  ' "$IDX/post.sorted.tmp" "$IDX/term.off.tmp"
+  mv "$IDX/post.sorted.tmp" "$IDX/post.sorted"; mv "$IDX/term.off.tmp" "$IDX/term.off"
+  rm -f "$IDX/post.tail.sorted" "$IDX/post.tail.c"
+  # BAKE (P2): the republished post.sorted invalidates term.bin's size gate — re-bake now so the
+  # reader never lingers on the tsv fallback longer than the compact itself.
+  "$ROOT/libexec/bake" "$IDX" "$PARENTS" >/dev/null 2>&1 || true
+  echo "compact · tail folded · $(wc -l < "$IDX/term.off" | tr -d ' ') terms keyed"
+  ;;
+svd)
+  # CHAIN-NATIVE MANIFOLD (the corrected lift): learn the lens FROM the chain itself — PPMI + SVD
+  # word vectors over every clause (no external model, chip.chain.brain). chunk vec = idf-weighted
+  # mean of word vecs; parent vec = mean of its chunk vecs. Evaluates fold-sibling retrieval
+  # (apples-to-apples vs the refuted 0.020 baseline). Derived artifacts: index/svd/*.
+  SD="$ROOT/index/svd"; mkdir -p "$SD"
+  CH="$IDXR/chunks.tsv"; [ -s "$CH" ] || { echo "coalesce svd: no chunks.tsv" >&2; exit 69; }
+  DIMS="${SVD_DIMS:-48}"
+  perl /dev/stdin "$CH" "$PARENTS" "$SD" "$DIMS" <<'PL'
+use strict; use warnings;
+my($cf,$pf,$SD,$DIMS)=@ARGV;
+sub toks{ my $s=lc(shift); $s=~s/[^a-z0-9]+/ /g; grep{length>2} split / /,$s }
+# ---- pass 1: counts (word df, word-in-chunk occurrences) ----
+my (%df,%tf); my $NC=0;
+open my $C,'<:raw',$cf or die;
+my (@cpar,@ctoks);
+while(<$C>){ chomp; my($id,$par,$tx)=split/\t/,$_,3; $NC++;
+  my @t=toks($tx//""); my %u; $u{$_}++ for @t;
+  push @cpar,$par; push @ctoks,[%u];
+  for my $w (keys %u){ $df{$w}++; $tf{$w}+=$u{$w} } }
+close $C;
+# vocab: keep words 5 <= df <= NC/10 (drop hapax + stopwords)
+my %vid; my @vw; for my $w (sort keys %df){ next if $df{$w}<5 || $df{$w}>$NC/10; $vid{$w}=@vw; push @vw,$w }
+my $V=@vw; print "svd: chunks=$NC vocab=$V dims=$DIMS\n";
+# ---- PPMI rows per chunk (sparse) ----
+# ppmi(w,c-context) approximated at chunk granularity: weight = idf(w) (cheap, retrieval-oriented)
+my %idf; $idf{$_}=log($NC/$df{$vw[$vid{$_}]}) for keys %vid;
+# sparse chunk-term matrix: rows = chunks, cols = vocab, val = (1+log tf) * idf
+my (@rowptr,@colid,@val); my $nz=0;
+for my $ci (0..$NC-1){
+  push @rowptr,$nz; my %u=@{$ctoks[$ci]};
+  for my $w (keys %u){ next unless exists $vid{$w};
+    push @colid,$vid{$w}; push @val,(1+log($u{$w}))*$idf{$w}; $nz++ } }
+push @rowptr,$nz; @ctoks=();
+print "svd: nonzeros=$nz\n";
+# ---- top-DIMS right singular vectors of X (vocab-space) via power iteration on X^T X ----
+my @U;  # vocab x DIMS
+for my $k (0..$DIMS-1){
+  my @v=map{ (($_*2654435761+$k*613)%1000)/1000-0.5 }(0..$V-1);
+  for my $it (0..9){
+    my @xu=(0)x$NC;
+    for my $ci (0..$NC-1){ my $s=0;
+      for my $p ($rowptr[$ci]..$rowptr[$ci+1]-1){ $s+=$val[$p]*$v[$colid[$p]] } $xu[$ci]=$s }
+    my @nv=(0)x$V;
+    for my $ci (0..$NC-1){ my $u=$xu[$ci]; next unless $u;
+      for my $p ($rowptr[$ci]..$rowptr[$ci+1]-1){ $nv[$colid[$p]]+=$val[$p]*$u } }
+    for my $pe (@U){ my $dp=0; $dp+=$nv[$_]*$pe->[$_] for 0..$V-1; $nv[$_]-=$dp*$pe->[$_] for 0..$V-1 }
+    my $nn=0;$nn+=$_*$_ for @nv;$nn=sqrt($nn)||1;@v=map{$_/$nn}@nv;
+  }
+  push @U,[@v];
+  print "svd: dim $k\n" if $k%8==7;
+}
+# ---- word vectors -> chunk vectors -> parent vectors ----
+open my $WO,'>',"$SD/words.tsv"; for my $w (sort{$vid{$a}<=>$vid{$b}} keys %vid){ print $WO "$w\n" } close $WO;
+open my $UO,'>:raw',"$SD/wordvec.bin";
+for my $wi (0..$V-1){ my @wv=map{$U[$_][$wi]}0..$DIMS-1; print $UO pack("f*",@wv) } close $UO;
+# parent vectors: sum of chunk vecs (chunk vec = X row * U), normalized
+open my $PF2,'<',$pf or die; my @phash; my $pi=0; while(<$PF2>){chomp; my($h)=split/\t/,$_,2; $phash[++$pi]=$h} close $PF2;
+my %pv;
+for my $ci (0..$NC-1){
+  my @cv=(0)x$DIMS;
+  for my $p ($rowptr[$ci]..$rowptr[$ci+1]-1){ my $w=$colid[$p]; my $x=$val[$p];
+    $cv[$_]+=$x*$U[$_][$w] for 0..$DIMS-1 }
+  my $par=$cpar[$ci]; $pv{$par}//=[(0)x$DIMS];
+  $pv{$par}[$_]+=$cv[$_] for 0..$DIMS-1;
+}
+open my $PO,'>',"$SD/parent.hash"; open my $PB,'>:raw',"$SD/parent.bin"; my $np=0;
+for my $par (sort{$a<=>$b} keys %pv){
+  my $h=$phash[$par]//next; my $v=$pv{$par};
+  my $nn=0;$nn+=$_*$_ for @$v;$nn=sqrt($nn)||1;
+  print $PO "$h\n"; print $PB pack("f*",map{$_/$nn}@$v); $np++;
+}
+close $PO; close $PB;
+open my $ST,'>',"$SD/stats"; print $ST "parents=$np\ndim=$DIMS\nvocab=$V\n"; close $ST;
+# ---- EVAL: fold-sibling retrieval, same protocol as the refuted lens (chunk query vs chunk pool) ----
+my (@sq,@sl,@sv);
+for(my $ci=0;$ci<$NC && @sq<4000;$ci+=int($NC/4000)||1){
+  my @cv=(0)x$DIMS;
+  for my $p ($rowptr[$ci]..$rowptr[$ci+1]-1){ my $w=$colid[$p]; my $x=$val[$p];
+    $cv[$_]+=$x*$U[$_][$w] for 0..$DIMS-1 }
+  my $nn=0;$nn+=$_*$_ for @cv; next if $nn<1e-9; $nn=sqrt($nn);
+  push @sq,[map{$_/$nn}@cv]; push @sl,$cpar[$ci];
+}
+my %plc; $plc{$_}++ for @sl;
+my $hit=0; my $tries=0;
+for(my $qi=7;$qi<@sq && $tries<300;$qi+=int(@sq/300)||1){
+  next unless $plc{$sl[$qi]}>=2; $tries++;
+  my $q=$sq[$qi]; my($best,$bi)=(-2,-1);
+  for my $i (0..$#sq){ next if $i==$qi; my $c=0; my $f=$sq[$i];
+    $c+=$f->[$_]*$q->[$_] for 0..$DIMS-1; if($c>$best){$best=$c;$bi=$i} }
+  $hit++ if $sl[$bi] eq $sl[$qi];
+}
+printf "svd: fold-sibling retrieval P\@1 = %.3f (%d/%d)   [refuted apple-lens baseline = 0.020]\n",$tries?$hit/$tries:0,$hit,$tries;
+PL
+  ;;
+bake)
+  # BAKE THE LENS + LSH (Lane B, chip): apply lens.drop to the parent nanodex -> nanodex.lens.bin
+  # (raw kept for relearning), then hyperplane LSH buckets (shadow geometry: L=10 tables x B=12
+  # seeded planes) on the BAKED vectors -> nanodex.lsh. Weak-query scan goes full -> buckets.
+  ND="$ROOT/index/nanodex"; NDC="$ROOT/index/nanodexc"
+  [ -s "$ND/nanodex.bin" ] || { echo "coalesce bake: no nanodex" >&2; exit 69; }
+  [ -s "$NDC/lens.pcs" ] || { echo "coalesce bake: no lens (run: coalesce lens)" >&2; exit 69; }
+  perl /dev/stdin "$ND" "$NDC" <<'PL'
+use strict; use warnings;
+my($ND,$NDC)=@ARGV;
+my %st; open my $S,'<',"$ND/stats"; while(<$S>){chomp;my($k,$v)=split/=/;$st{$k}=$v} close $S;
+my($nrow,$d)=($st{rows},$st{dim}); my $row=4*$d;
+open my $PC,'<',"$NDC/lens.pcs" or die; my @E; while(<$PC>){chomp; push @E,[split / /]} close $PC;
+open my $DR,'<',"$NDC/lens.drop" or die; my $dl=<$DR>//''; chomp $dl; my @drop=grep{length}split / /,$dl; close $DR;
+my @DE=map{$E[$_]}@drop;
+# seeded hyperplanes (shadow geometry)
+my($L,$B)=(10,12); my @PLANE;
+for my $p (0..$L*$B-1){ my @r; for my $i (0..$d-1){ my $hh=($p*2654435761 + $i*40503 + 0x5CA1AB1E) % 0xFFFFFFFF; push @r, ((($hh>>16)&1)?1:-1) } $PLANE[$p]=\@r }
+open my $BF,'<:raw',"$ND/nanodex.bin" or die;
+open my $BO,'>:raw',"$ND/nanodex.lens.bin" or die;
+open my $LO,'>',"$ND/nanodex.lsh.tmp" or die;
+my $buf;
+for(my $r=0;$r<$nrow;$r++){
+  sysread($BF,$buf,$row)==$row or last;
+  my @w=unpack("f$d",$buf);
+  for my $ej (@DE){ my $dp=0; $dp+=$w[$_]*$ej->[$_] for 0..$d-1; $w[$_]-=$dp*$ej->[$_] for 0..$d-1 }
+  my $nn=0;$nn+=$_*$_ for @w;$nn=sqrt($nn)||1;$_/=$nn for @w;
+  print $BO pack("f*",@w);
+  for my $t (0..$L-1){ my $key=0;
+    for my $j (0..$B-1){ my $pl=$PLANE[$t*$B+$j]; my $dp=0; $dp+=$w[$_]*$pl->[$_] for 0..$d-1; $key=($key<<1)|($dp>=0?1:0) }
+    print $LO "$t:$key $r\n" }
+}
+close $BF; close $BO; close $LO;
+system("sort -k1,1 '$ND/nanodex.lsh.tmp' > '$ND/nanodex.lsh' && rm -f '$ND/nanodex.lsh.tmp'");
+print "bake: $nrow rows lensed (dropped ",scalar(@drop)," PCs) + LSH L=$L B=$B\n";
+PL
+  ;;
+lens)
+  # THE CHAIN SUPERVISES ITS OWN LENS (chip.chain.brain): supervision = fold membership (clauses
+  # of the SAME fold belong close; the chain's structure IS the labels — no external teacher).
+  # Learn per-PC Fisher (between-fold/within-fold variance) over the clause manifold; the lens
+  # downweights style/noise directions. Derived artifacts only: index/nanodexc/lens.{pcs,fisher,drop}.
+  #   coalesce lens          learn + sweep + auto-pick Q (fold-retrieval P@1)
+  ND="$ROOT/index/nanodexc"
+  [ -s "$ND/nanodexc.bin" ] || { echo "coalesce lens: no nanodexc (run: coalesce nanodexc)" >&2; exit 69; }
+  perl /dev/stdin "$ND" <<'PL'
+use strict; use warnings;
+my($ND)=@ARGV;
+my $K=32; my $SAMPLE=4000; my $PCSAMPLE=1500; my $EVALQ=300;
+open my $PR,'<',"$ND/nanodexc.par" or die; my @PAR=<$PR>; chomp @PAR; close $PR;
+my %cnt; $cnt{$_}++ for @PAR;
+my %st; open my $S,'<',"$ND/stats"; while(<$S>){chomp;my($k,$v)=split/=/;$st{$k}=$v} close $S;
+my($nrow,$d)=($st{rows},$st{dim}); my $row=4*$d;
+open my $BF,'<:raw',"$ND/nanodexc.bin" or die;
+my (@X,@L); my $buf;
+for(my $r=0;$r<$nrow && @X<$SAMPLE;$r++){
+  my $p=$PAR[$r]; next unless $cnt{$p}>=4 && $cnt{$p}<=40;
+  next if $r%3;
+  sysseek($BF,$r*$row,0); sysread($BF,$buf,$row)==$row or last;
+  push @X,[unpack("f$d",$buf)]; push @L,$p;
+}
+close $BF; my $n=@X;
+print "lens: sample n=$n parents=",scalar(keys %{{map{($_=>1)}@L}}),"\n";
+my @C; for(my $i=0;$i<$n && @C<$PCSAMPLE;$i+=int($n/$PCSAMPLE)||1){ push @C,$X[$i] }
+my @E;
+for my $e (0..$K-1){
+  my @v=map{ (($_*2654435761+$e*131)%1000)/1000-0.5 }(0..$d-1);
+  for my $it (0..15){ my @nv=(0)x$d;
+    for my $x (@C){ my $dp=0; $dp+=$x->[$_]*$v[$_] for 0..$d-1; $nv[$_]+=$dp*$x->[$_] for 0..$d-1 }
+    for my $pe (@E){ my $dp=0; $dp+=$nv[$_]*$pe->[$_] for 0..$d-1; $nv[$_]-=$dp*$pe->[$_] for 0..$d-1 }
+    my $nn=0;$nn+=$_*$_ for @nv;$nn=sqrt($nn)||1;@v=map{$_/$nn}@nv; }
+  push @E,[@v];
+}
+my @fisher;
+for my $j (0..$K-1){
+  my $ej=$E[$j]; my (%sum,%sq,%m);
+  for my $i (0..$n-1){ my $x=$X[$i]; my $s=0; $s+=$x->[$_]*$ej->[$_] for 0..$d-1;
+    $sum{$L[$i]}+=$s; $sq{$L[$i]}+=$s*$s; $m{$L[$i]}++ }
+  my($wss,$bss,$gm,$np)=(0,0,0,0); my @means;
+  for my $p (keys %m){ my $mu=$sum{$p}/$m{$p}; push @means,$mu; $gm+=$mu; $np++;
+    $wss += $sq{$p}/$m{$p} - $mu*$mu }
+  $gm/=$np; $bss += ($_-$gm)**2 for @means; $bss/=$np; $wss/=$np;
+  $fisher[$j] = $wss>1e-9 ? $bss/$wss : 0;
+}
+my @ord=sort{ $fisher[$b]<=>$fisher[$a] } 0..$K-1;
+print "lens: fisher(sorted) ",join(" ",map{sprintf"%.2f",$fisher[$_]}@ord),"\n";
+sub filt{ my($x,$drop)=@_; my @w=@$x;
+  for my $j (@$drop){ my $ej=$E[$j]; my $dp=0; $dp+=$w[$_]*$ej->[$_] for 0..$d-1; $w[$_]-=$dp*$ej->[$_] for 0..$d-1 }
+  my $nn=0;$nn+=$_*$_ for @w;$nn=sqrt($nn)||1; [map{$_/$nn}@w] }
+my @qidx; for(my $i=7;$i<$n && @qidx<$EVALQ;$i+=int($n/$EVALQ)||1){ push @qidx,$i }
+my($bestQ,$bestA)=(0,-1); my %acc;
+for my $Q (0,4,8,12,16){
+  my @drop = $Q ? @ord[$K-$Q..$K-1] : ();
+  my @F = map{ filt($_,\@drop) } @X;
+  my $hit=0;
+  for my $qi (@qidx){
+    my $q=$F[$qi]; my($best,$bi)=(-2,-1);
+    for my $i (0..$n-1){ next if $i==$qi; my $c=0; my $f=$F[$i];
+      $c+=$f->[$_]*$q->[$_] for 0..$d-1; if($c>$best){$best=$c;$bi=$i} }
+    $hit++ if $L[$bi] eq $L[$qi];
+  }
+  my $a=$hit/@qidx; $acc{$Q}=$a;
+  printf "lens: Q=%2d dropped -> fold-retrieval P\@1 = %.3f (%d/%d)\n",$Q,$a,$hit,scalar(@qidx);
+  if($a>$bestA){$bestA=$a;$bestQ=$Q}
+}
+open my $O,'>',"$ND/lens.pcs"; print $O join(" ",map{sprintf"%.6f",$_}@{$E[$_]}),"\n" for 0..$K-1; close $O;
+open my $F2,'>',"$ND/lens.fisher"; print $F2 join(" ",map{sprintf"%.4f",$_}@fisher),"\n"; close $F2;
+open my $D,'>',"$ND/lens.drop"; print $D join(" ",$bestQ?@ord[$K-$bestQ..$K-1]:()),"\n"; close $D;
+printf "lens: PICKED Q=%d (P\@1=%.3f baseline=%.3f) -> lens.drop written\n",$bestQ,$bestA,$acc{0};
+PL
+  ;;
+nanodexc)
+  # CHUNK-LEVEL semantic tier (R5b): embed every CLAUSE (the max-chunk thesis — one distinctive
+  # clause surfaces its fold), pool max-cos per parent at query time. Derived sidecar only.
+  ND="$ROOT/index/nanodexc"; mkdir -p "$ND"
+  EMBED="$ROOT/libexec/embed"; CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 8)
+  CH="$IDXR/chunks.tsv"; [ -s "$CH" ] || { echo "coalesce nanodexc: no chunks.tsv" >&2; exit 69; }
+  rm -f "$ND"/shard.*
+  n=$(wc -l < "$CH" | tr -d ' '); per=$(( (n + CORES - 1) / CORES ))
+  perl -e '
+    my($cf,$per,$nd)=@ARGV; open my $C,"<:raw",$cf or die; my %PF; my %TF; my $nr=0;
+    while(my $l=<$C>){ chomp $l; my($cid,$pidx,$t)=split /\t/,$l,3; $t//=""; my $s=int($nr++/$per);
+      unless($PF{$s}){ open $PF{$s},">","$nd/shard.$s.par" or die; open $TF{$s},">:raw","$nd/shard.$s.txt" or die }
+      $t=~s/\x0/ /g; print {$PF{$s}} "$pidx\n"; print {$TF{$s}} "$t\0"; }
+  ' "$CH" "$per" "$ND"
+  pids=""; for s in $(seq 0 $((CORES-1))); do
+    [ -f "$ND/shard.$s.txt" ] || continue
+    "$EMBED" < "$ND/shard.$s.txt" > "$ND/shard.$s.vec" 2>/dev/null & pids="$pids $!"
+  done
+  for p in $pids; do wait "$p"; done
+  perl /dev/stdin "$ND" "$CORES" <<'PL'
+use strict; use warnings; my($nd,$cores)=@ARGV;
+my (@P,@RAW); my $miss=0;
+for my $s (0..$cores-1){
+  next unless -f "$nd/shard.$s.par";
+  open my $HF,'<',"$nd/shard.$s.par" or die; my @pp=<$HF>; chomp @pp; close $HF;
+  open my $VF,'<',"$nd/shard.$s.vec" or die; my $i=0;
+  while(my $v=<$VF>){ chomp $v; my $p=$pp[$i++]; next unless defined $p;
+    if($v eq 'MISS' || $v!~/ /){ $miss++; next }
+    push @P,$p; push @RAW,$v; } close $VF; }
+my $n=@P; die "nanodexc: no vectors" unless $n;
+my @f0=split / /,$RAW[0]; my $d=@f0;
+my @mu=(0)x$d; for my $r (@RAW){ my @w=split / /,$r; $mu[$_]+=$w[$_] for 0..$d-1 } $_/=$n for @mu;
+my @S; for(my $i=0;$i<$n;$i+=37){ my @w=split / /,$RAW[$i]; $w[$_]-=$mu[$_] for 0..$d-1; push @S,\@w }
+my @v=map{ (($_*2654435761)%1000)/1000-0.5 }(0..$d-1);
+for my $it (0..17){ my @nv=(0)x$d;
+  for my $x (@S){ my $dp=0; $dp+=$x->[$_]*$v[$_] for 0..$d-1; $nv[$_]+=$dp*$x->[$_] for 0..$d-1 }
+  my $nn=0;$nn+=$_*$_ for @nv;$nn=sqrt($nn)||1;@v=map{$_/$nn}@nv; }
+open my $M,'>',"$nd/nanodexc.mean"; print $M join(" ",map{sprintf"%.6f",$_}@mu),"\n"; close $M;
+open my $E,'>',"$nd/nanodexc.eig";  print $E join(" ",map{sprintf"%.6f",$_}@v),"\n";  close $E;
+open my $PO,'>',"$nd/nanodexc.par"; open my $BO,'>:raw',"$nd/nanodexc.bin";
+for my $i (0..$n-1){ my @w=split / /,$RAW[$i];
+  $w[$_]-=$mu[$_] for 0..$d-1;
+  my $dp=0; $dp+=$w[$_]*$v[$_] for 0..$d-1; $w[$_]-=$dp*$v[$_] for 0..$d-1;
+  my $nn=0;$nn+=$_*$_ for @w;$nn=sqrt($nn)||1; $_/=$nn for @w;
+  print $PO "$P[$i]\n"; print $BO pack("f*",@w); }
+close $PO; close $BO;
+open my $ST,'>',"$nd/stats"; print $ST "rows=$n\ndim=$d\nmiss=$miss\n"; close $ST;
+print "nanodexc: rows=$n dim=$d miss=$miss\n";
+PL
+  rm -f "$ND"/shard.*
+  ;;
+nanodex)
+  # SEMANTIC SIDECAR (R5, derived — never the chain): blast-swarm embed every NANO parent on the
+  # ANE (512-dim), then spectral transform (center + remove top-1 PC = de-anisotropize, the shadow
+  # calibration) and pack unit vectors for the BFS scan. bits on chain; floats ONLY here.
+  ND="$ROOT/index/nanodex"; mkdir -p "$ND"
+  EMBED="$ROOT/libexec/embed"; CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 8)
+  [ -s "$PARENTS" ] || { echo "coalesce nanodex: no parents.tsv (run: coalesce build)" >&2; exit 69; }
+  # shard hashes + texts (truncate 1200 chars — embed cost bound), NUL-delimited per record
+  rm -f "$ND"/shard.*; n=$(wc -l < "$PARENTS" | tr -d ' ')
+  per=$(( (n + CORES - 1) / CORES ))
+  # byte-safe sharder (raw mode — formals may carry non-UTF8 bytes; awk multibyte chokes)
+  perl -e '
+    my($pf,$per,$nd)=@ARGV; open my $P,"<:raw",$pf or die; my %HF; my %TF; my $nr=0;
+    while(my $l=<$P>){ chomp $l; my($h,$t)=split /\t/,$l,2; $t//=""; my $s=int($nr++/$per);
+      unless($HF{$s}){ open $HF{$s},">","$nd/shard.$s.hash" or die; open $TF{$s},">:raw","$nd/shard.$s.txt" or die }
+      $t=substr($t,0,1200); $t=~s/\x0/ /g;
+      print {$HF{$s}} "$h\n"; print {$TF{$s}} "$t\0"; }
+  ' "$PARENTS" "$per" "$ND"
+  # BLAST SWARM: one embed per shard, all cores
+  pids=""; for s in $(seq 0 $((CORES-1))); do
+    [ -f "$ND/shard.$s.txt" ] || continue
+    "$EMBED" < "$ND/shard.$s.txt" > "$ND/shard.$s.vec" 2>/dev/null & pids="$pids $!"
+  done
+  for p in $pids; do wait "$p"; done
+  # spectral transform + pack (streaming mean; top-1 PC power-iterated on a 1/7 sample)
+  perl /dev/stdin "$ND" "$CORES" <<'PL'
+use strict; use warnings; my($nd,$cores)=@ARGV;
+my (@H,@RAW); my $miss=0;
+for my $s (0..$cores-1){
+  next unless -f "$nd/shard.$s.hash";
+  open my $HF,'<',"$nd/shard.$s.hash" or die; my @hh=<$HF>; chomp @hh; close $HF;
+  open my $VF,'<',"$nd/shard.$s.vec" or die; my $i=0;
+  while(my $v=<$VF>){ chomp $v; my $h=$hh[$i++]; next unless defined $h;
+    if($v eq 'MISS' || $v!~/ /){ $miss++; next }
+    push @H,$h; push @RAW,$v; } close $VF; }
+my $n=@H; die "nanodex: no vectors" unless $n;
+my @f0=split / /,$RAW[0]; my $d=@f0;
+my @mu=(0)x$d;
+for my $r (@RAW){ my @w=split / /,$r; $mu[$_]+=$w[$_] for 0..$d-1 }
+$_/=$n for @mu;
+# top-1 PC on every-7th sample
+my @S; for(my $i=0;$i<$n;$i+=7){ my @w=split / /,$RAW[$i]; $w[$_]-=$mu[$_] for 0..$d-1; push @S,\@w }
+my @v=map{ (($_*2654435761)%1000)/1000-0.5 }(0..$d-1);
+for my $it (0..17){ my @nv=(0)x$d;
+  for my $x (@S){ my $dp=0; $dp+=$x->[$_]*$v[$_] for 0..$d-1; $nv[$_]+=$dp*$x->[$_] for 0..$d-1 }
+  my $nn=0;$nn+=$_*$_ for @nv;$nn=sqrt($nn)||1;@v=map{$_/$nn}@nv; }
+open my $M,'>',"$nd/nanodex.mean"; print $M join(" ",map{sprintf"%.6f",$_}@mu),"\n"; close $M;
+open my $E,'>',"$nd/nanodex.eig";  print $E join(" ",map{sprintf"%.6f",$_}@v),"\n";  close $E;
+open my $HO,'>',"$nd/nanodex.hash"; open my $BO,'>:raw',"$nd/nanodex.bin";
+for my $i (0..$n-1){ my @w=split / /,$RAW[$i];
+  $w[$_]-=$mu[$_] for 0..$d-1;
+  my $dp=0; $dp+=$w[$_]*$v[$_] for 0..$d-1; $w[$_]-=$dp*$v[$_] for 0..$d-1;
+  my $nn=0;$nn+=$_*$_ for @w;$nn=sqrt($nn)||1; $_/=$nn for @w;
+  print $HO "$H[$i]\n"; print $BO pack("f*",@w); }
+close $HO; close $BO;
+open my $ST,'>',"$nd/stats"; print $ST "rows=$n\ndim=$d\nmiss=$miss\n"; close $ST;
+print "nanodex: rows=$n dim=$d miss=$miss\n";
+PL
+  rm -f "$ND"/shard.*
+  ;;
+*) echo "coal {build|recall <query>|nanodex}" >&2; exit 64 ;;
+esac

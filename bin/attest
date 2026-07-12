@@ -1,0 +1,7 @@
+#!/bin/sh
+# ATOM: CRYPTO — SE p256 signing; hash = content-address = the most primitive control.
+# the heartbeat: hash = content-address = the most primitive control; Secure-Enclave signing gates every fold, hardware-gated.
+# attest — SIGN (b6·S). The Secure Enclave signs the fold's ##, or the fold does not happen.
+# The signer BINARY is the trust root and lives untouched at libexec/sesign (Mach-O, arm64);
+# this verb is its kernel face. verbs: keygen | sign | verify <b64> | alg | pub
+exec "$HOME/.canonic/libexec/sesign" "$@"

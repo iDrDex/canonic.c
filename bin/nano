@@ -1,0 +1,15 @@
+#!/bin/sh
+# ATOM: LAMBDA — the transform unit: content-addressed, prev-chained, SE-signed. A fold.
+# the transform unit, λ: one fold = full functional decomposition to normal form (min-LOG), content-addressed, prev-chained, signed.
+# nano — FOLD (b7·C). THE FOLD ATOM: ## = sha256(prev ++ formal), single-writer, fail-closed
+# (no signature, no fold). THE ONLY CHAIN WRITER — never fan out. Everything else composes this.
+# R0 SEAL: event-append + HEAD + HEAD.sig all happen inside the ONE single-writer .emit.lock.
+#   nano <formal>            fold one nano (stdin if no arg) → prints the new head ##
+#   nano handoff <text>      re-measure the floor, fold BOOTSTRAP_HANDOFF, repoint the pointer
+# engine: libexec/canonic (the dissolved kernel — nano IS its fold verb)
+set -u
+if [ "${1:-}" = handoff ]; then shift; exec "$HOME/.canonic/libexec/canonic" handoff "$@"; fi
+formal="${1:-$(cat)}"
+[ -n "$formal" ] || { echo "nano <formal>" >&2; exit 64; }
+out="$("$HOME/.canonic/libexec/canonic" fold "$formal")" || exit $?
+printf '%s\n' "${out##*magic://}"

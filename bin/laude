@@ -1,0 +1,122 @@
+#!/bin/sh
+# ATOM: MAGIC — the semantic interface over the fabric (laude = MAGIC × CHAT, the measured basis).
+# the framework / fabric: the compiled kernel of bitwise-compliance mapping — the binary is open, open-core; recall is the fabric interface.
+# laude — the SOV INTERFACE, minimal, on chip. laude does NOT reason and does NOT fabricate.
+# It recalls over the CHAIN (the ledger IS the corpus — no mci index; the drain took it, the chain remains):
+# word-overlap grounding, honest miss below the floor. laude is sov; claude is not. laude attests, or it misses.
+set -u
+LED="$HOME/.canonic/LEDGER/closure/events.jsonl"; [ -f "$LED" ] || LED="$HOME/forge/LEDGER/closure/events.jsonl"
+# laude IS the transpiler agent (fixed): laude transpile <spec> [target] → magic basis, stable content-##.
+if [ "${1:-}" = transpile ]; then shift; exec "$HOME/.canonic/libexec/magic" transpile "$@"; fi
+# ── THE HITL MISS→FOLD LOOP (P3). The old auto-healer FABRICATED composite answers and is dead
+# (see canonic beat). This loop is split at the human: `draft` is RETRIEVAL ONLY (never folds),
+# `adopt` is the MINT and demands a tty + a typed yes. Drafting is a machine's job; minting is
+# a human's word — A5 intact by construction.
+if [ "${1:-}" = draft ]; then
+  ML="$HOME/.canonic/index/miss.log"; DR="$HOME/.canonic/index/drafts"; mkdir -p "$DR"
+  [ -s "$ML" ] || { echo "laude draft: no misses to draft"; exit 0; }
+  sort -u "$ML" | head -20 | while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    id=$(printf '%s' "$m" | shasum -a 256 | cut -c1-16)
+    [ -f "$DR/$id.draft" ] && continue
+    {
+      echo "MISS: $m"
+      echo "EVIDENCE (retrieval only — NOT an attest; the floor did not pass):"
+      LAUDE_CDIV=2 LAUDE_TB=3 LAUDE_MINCOV=0.50 LAUDE_MINC=1 "$HOME/.canonic/libexec/bm25" \
+        "$HOME/.canonic/index/docs/idx" "$HOME/.canonic/index/docs/parents.tsv" $m 2>/dev/null | sed 's/^/  docs: /'
+      "$HOME/.canonic/libexec/bm25" \
+        "$HOME/.canonic/index/coalesce/idx" "$HOME/.canonic/index/coalesce/parents.tsv" $m 2>/dev/null | sed 's/^/  full: /'
+      echo "FORMAL: "
+    } > "$DR/$id.draft"
+    echo "drafted $DR/$id.draft"
+  done
+  cat "$ML" >> "$ML.drained" 2>/dev/null; : > "$ML"   # rotate: drafted, not folded
+  exit 0
+fi
+if [ "${1:-}" = adopt ]; then
+  d="${2:-}"; [ -f "$d" ] || { echo "laude adopt <draftfile>" >&2; exit 64; }
+  [ -t 0 ] || { echo "laude adopt: requires a tty (HITL — a human mints, never a pipe)" >&2; exit 5; }
+  cat "$d"
+  printf 'fold the FORMAL line above? type yes: '
+  read -r ans; [ "$ans" = yes ] || { echo "not folded"; exit 0; }
+  f=$(sed -n 's/^FORMAL: *//p' "$d" | tail -1)
+  [ -n "$f" ] || { echo "laude adopt: FORMAL line is empty — edit the draft first" >&2; exit 64; }
+  mkdir -p "$(dirname "$d")/done"; mv "$d" "$(dirname "$d")/done/"
+  exec "$HOME/.canonic/bin/nano" "$f"
+fi
+# --sov: THE ANSWER IS A .SOV. Not JSON — the chain already HAS a format: the signed event line.
+# laude emits the ## ; sov resolves it to the .sov (the full signed chain link — the attestation of
+# bitwise precision). No invented schema, no prose contract. The .sov IS the transmission.
+if [ "${1:-}" = --sov ]; then
+  shift
+  h=$(LAUDE_JSON=1 sh "$0" "$@" 2>/dev/null | grep -o '"sov":"[0-9a-f]*"' | cut -d'"' -f4)
+  [ -n "$h" ] && exec sh "$HOME/.canonic/bin/sov" "$h"
+  echo 'laude: honest miss'; exit 0
+fi
+# THE BYTE TRANSMISSION: `laude --json` emits the STRUCTURE (attested · sov ## · cov · sep · formal).
+# sovd hooks THIS, not prose — a regex contract between programs breaks the moment the line changes
+# (it did: the sov:// broke the public gate to a silent honest-miss). The ## IS the transmission.
+if [ "${1:-}" = --json ]; then shift; export LAUDE_JSON=1; fi
+q="$*"; [ -n "$q" ] || { echo "laude <query>   — the sov interface, recall over the chain" >&2; exit 64; }
+# LAUDE IS SOV (the operator's seal): a query that IS an address wants resolution, not ranking —
+# the ## already names its truth; hand it to the resolver (one interface, two directions).
+case "$q" in
+  sov://*|magic://*|qed://*) exec "$HOME/.canonic/bin/sov" "$q" ;;
+  *) if printf '%s' "$q" | LC_ALL=C grep -qE '^[0-9a-f]{8,64}$'; then exec "$HOME/.canonic/bin/sov" "$q"; fi ;;
+esac
+# COALESCE route: chunk+BM25 max-chunk surfaces the RIGHT fold (fixes word-overlap length bias).
+# Try coalesce first; fall through to word-overlap on miss/absent (honest-miss preserved). LAUDE_RAW=1 forces word-overlap.
+IDXS="$HOME/.canonic/index/coalesce/idx/stats"
+# NATIVE # PATH (on chip, no perl): bm25.c mmaps the index — ~19ms vs ~1.2s perl. If it attests,
+# that IS the answer; on its honest-miss fall through to coalesce (spectral tier) for weak-lexical.
+BM25="$HOME/.canonic/libexec/bm25"; BIDX="$HOME/.canonic/index/coalesce/idx"; BPAR="$HOME/.canonic/index/coalesce/parents.tsv"
+# R8 freshness guard: a STALE term.off (older than post.tsv) blinds the native reader to the
+# newest folds — its miss would be a FALSE miss (floor breach). Stale -> skip native, use coalesce.
+# ── TIER 0 — THE NANO DOCS (scope beats size). The KNOWLEDGE (law · axiom · vocab · kernel ·
+# alias · decomp = 174 folds) is 1.4% of the corpus. BM25 over the full 196k drowns every law in
+# the 12k chat transcripts that merely MENTION it ("what is the fold" → a transcript, 2026-07-12).
+# So laude asks the DOCS first — its own MATCHED index (index/docs: parents + idx built together;
+# passing a foreign parents file to a foreign index maps chunks to the wrong folds). A doc attest
+# wins outright. A doc miss falls THROUGH to the full corpus — the transcripts still answer what
+# only they know. Same C reader, same floor, smaller world.
+DIDX="$HOME/.canonic/index/docs/idx"; DPAR="$HOME/.canonic/index/docs/parents.tsv"
+if [ -z "${LAUDE_RAW:-}" ] && [ -x "$BM25" ] && [ -s "$DIDX/term.off" ] && [ -s "$DPAR" ]; then
+  # OPTIMUM (2D sweep over the 12-question eval, 2026-07-12): TB=3 CDIV=2 → recall@1 8/12,
+  # up from 6/12. The plateau is TB 3-4 × CDIV 2-3. The residual 4 are MISSING FOLDS, not
+  # ranking errors (no #vocab PRIMITIVE, no #vocab MOAT) — the recall ceiling IS the knowledge
+  # ceiling, exactly as #law two-loops-train-laude predicts. Tuning is done; folding is the work.
+  dout=$(LAUDE_CDIV=2 LAUDE_TB=3 LAUDE_MINCOV=0.50 LAUDE_MINC=1 "$BM25" "$DIDX" "$DPAR" $q 2>/dev/null)
+  case "$dout" in "laude attests"*|*'"attested":true'*) printf '%s\n' "$dout"; exit 0 ;; esac
+fi
+# P1: the R8 mtime freshness guard is GONE — the inc appends postings to idx/post.tail and the
+# native reader scans that tail alongside the term.off seeks, so the seek map can no longer
+# false-miss a fresh fold. There is no window to guard.
+if [ -z "${LAUDE_RAW:-}" ] && [ -x "$BM25" ] && [ -s "$BIDX/term.off" ]; then
+  bout=$("$BM25" "$BIDX" "$BPAR" $q 2>/dev/null)
+  case "$bout" in
+    "laude attests"*|*'"attested":true'*) printf '%s\n' "$bout"; exit 0 ;;
+    *"honest miss"*|*'"attested":false'*)   # STRUCTURE, not prose
+      # NATIVE IS SOV (R8): perl is NOT native — it must never sit on laude's recall path. native's
+      # miss IS the sov answer. The fix for a FALSE native miss is to make NATIVE complete+fresh
+      # (swarm perl's quality INTO the C reader), never to fall to perl. Log the miss for the beat.
+      printf '%s\n' "$bout"; printf '%s\n' "$q" >> "$HOME/.canonic/index/miss.log" 2>/dev/null; exit 0 ;;
+  esac
+fi
+# ── NO FALLBACK. NATIVE OR NOTHING.
+# The perl tier (coalesce recall) and the awk word-overlap tier are GONE (2026-07-12).
+# They were unreachable dead code — the C reader above exits on BOTH attest and miss — except
+# when the index was missing, which is exactly the case where the sealed law says FAIL, not fall
+# back: "PERL IS NOT NATIVE SOV — a non-native interpreter must NEVER sit on laude's recall path;
+# native's miss IS the sov answer." They also carried the last two PROSE CONTRACTS in the kernel
+# (case-matching another program's output), the bug class that silently broke the public gate and
+# laude's own dispatch tonight. Zero remain on the sovereign path.
+#
+# If the native reader cannot run (no index, stale seek-map), that is an HONEST MISS — and the
+# beat rebuilds the index. A degraded engine that answers anyway is how fabrication gets in.
+if [ -n "${LAUDE_JSON:-}" ]; then
+  printf '{"attested":false,"miss":"native reader unavailable — run: canonic beat"}\n'
+else
+  printf 'laude: honest miss — the native reader is unavailable (run: canonic beat)\n'
+fi
+printf '%s\n' "$q" >> "$HOME/.canonic/index/miss.log" 2>/dev/null
+exit 0

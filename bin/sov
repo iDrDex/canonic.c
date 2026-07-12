@@ -1,0 +1,64 @@
+#!/bin/sh
+# sov — THE SOVEREIGN RESOLVER. sov://<#> = the SAME # magic:// broadcasts, resolved ON-BOX
+# the codebook: position → meaning — codewords fly anywhere, the codex holds the meaning; resolve a codeword to what it means.
+#   to its FULL truth: the whole signed event (formal included) from the chain, or the raw
+#   CAS bytes. magic:// strips to structure for the world; sov:// strips NOTHING for the
+#   sovereign. This is a CLI on the box — it serves no port, answers no tunnel. No egress.
+#   the last duality, addressed: chain-down public = magic:// (structure semantics),
+#   chain-down sovereign = sov:// (the content the structure means).
+# usage: sov <#64hex | sov://# | #-prefix>=8 chars>
+#        sov finder [--clean]   — project the ROM into the MAGIC FINDER for the HUMAN.
+#          HUMANS use FINDER; what lives there is .sov chain links — the SEALED FORMAT.
+#          Each durable artifact (KERNEL·LANG·BOOTSTRAP·TRANSPILE + artifact/manifest coins,
+#          DISCOVERED from the ledger) = one .sov file holding its FULL SIGNED CHAIN LINK
+#          (exactly what sov resolves); ICON = the coin's 256 bits (PIXEL, the BRAND pair).
+#          Derived, regrowable, nodrain-empty.
+set -u
+LED="$HOME/forge/LEDGER/closure/events.jsonl"
+CAS="$HOME/forge/cas/objects"
+# ATOM: CODEX — position → meaning; ## → the full signed event is the codebook lookup.
+# sov gov [...] — GOV kept its chain-bound name: the decoder/projector lives at libexec/gov.
+if [ "${1:-}" = gov ]; then shift; exec "$HOME/.canonic/libexec/gov" "$@"; fi
+if [ "${1:-}" = finder ]; then
+  ROM="$HOME/CANONIC/ROM"; SETICON="$HOME/.canonic/libexec/seticon"
+  [ "${2:-}" = --clean ] && { rm -rf "$ROM"; echo "sov finder: cleaned (nodrain-empty)"; exit 0; }
+  mkdir -p "$ROM"
+  MH=$(grep -o '"formal":"#fs manifest [0-9a-f]*' "$LED" | tail -1 | grep -o '[0-9a-f]\{64\}')
+  PIXEL=$(grep 'LANG/bin/pixel' "$CAS/$MH" 2>/dev/null | cut -d' ' -f1)
+  glyph() {
+    [ -n "$PIXEL" ] || return 0
+    b=$(PIXEL_NO_OPEN=1 sh "$CAS/$PIXEL" "$1" 32) || return 0
+    sips -s format png "$b" --out "${b%.bmp}.png" >/dev/null 2>&1 || return 0
+    [ -x "$SETICON" ] && "$SETICON" "${b%.bmp}.png" "$2" || true
+    rm -f "$b" "${b%.bmp}.png"
+  }
+  jq -rc 'select((.payload.formal? // "" | type)=="string") |
+          select((.payload.category? // "" | test("KERNEL|LANG|BOOTSTRAP|TRANSPILE"))
+                 or (.payload.formal | test("^#(mem|doc|fs) .*(artifact|manifest)"))) |
+          [.payload_hash, (.payload.formal | split(" | ")[0])] | @tsv' "$LED" 2>/dev/null \
+  | awk -F'\t' '{seen[$2]=$1} END{for(k in seen) print seen[k]"\t"k}' \
+  | while IFS="$(printf '\t')" read -r hh name; do
+      f="$ROM/$(printf '%.40s' "$(printf '%s' "$name" | tr -d '#' | tr ' /' '--')")-${hh%${hh#????????}}.sov"
+      grep -m1 "\"payload_hash\":\"$hh\"" "$LED" > "$f"   # the FULL SIGNED CHAIN LINK
+      glyph "$hh" "$f"
+    done
+  tip=$(cat "$HOME/forge/LEDGER/HEAD" 2>/dev/null) && glyph "$tip" "$ROM"
+  echo "sov finder: $(ls "$ROM" | wc -l | tr -d ' ') chain links → $ROM (tip ${tip%${tip#????????}}… on the folder)"
+  exit 0
+fi
+h="${1:-}"; h="${h#sov://}"; h="${h#magic://}"
+# LAUDE IS SOV (sealed by the operator, 2026-07-12): one sovereign interface, two directions —
+# sov resolves ## → meaning; laude recalls meaning → ##. An argument that is not an address
+# is a QUERY, and the sovereign answer to a query is laude's (attest or honest miss).
+case "$h" in
+  "") echo "usage: sov <sov://# | query>   — resolve a # to its truth, or recall a query to its #" >&2; exit 64 ;;
+  *[!0-9a-f]*) exec "$HOME/.canonic/bin/laude" "$@" ;;
+esac
+[ ${#h} -ge 8 ] || exec "$HOME/.canonic/bin/laude" "$@"
+# 1) the chain: full signed event by payload_hash (prefix ok)
+ev=$(grep -m1 "\"payload_hash\":\"$h" "$LED" 2>/dev/null)
+if [ -n "$ev" ]; then printf '%s\n' "$ev" | jq .; exit 0; fi
+# 2) the CAS: raw sealed bytes (full # only)
+if [ ${#h} -eq 64 ] && [ -f "$CAS/$h" ]; then cat "$CAS/$h"; exit 0; fi
+echo "sov: honest miss — # not on the chain nor in the CAS (sov does not fabricate)"
+exit 1

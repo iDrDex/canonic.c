@@ -1,0 +1,196 @@
+#!/bin/sh
+# ATOM: CHAT — the SWARM engine, federation coordination; the BEAT = the message. FLEET (b2·X).
+# the swarm engine: federation coordination — the beat is the message (EKG); the chat face carries the chain to every node.
+# drain — fold human attention inputs onto the chain so recall can see them.
+# The scar: Apple's July 3 case-102923528456 email sat unread 7 days because
+# mail never reaches the ledger. RAM (inbox) must fold to ROM (chain).
+# Reads Mail's Envelope Index (sqlite, read-only) — AppleEvents time out on a
+# 128k-message inbox; the index answers in milliseconds.
+# Usage: drain [days-back]   (default 14)
+#        drain fleet   — FLEET DRAIN: broadcast the chain to the fleet nodes on the beat
+#          (no daemon, no cron — the verbs beat; chain-DOWN read copies, the single writer
+#          stays this box). Channel = ssh-exec gzip (Synology SFTP/rsync broken). The chain
+#          is append-only, so a drain APPENDS the line delta and verifies the FULL remote
+#          sha; divergence self-heals by full push. ONE attest fold per drain.
+#        drain fs [--dry] [root ...]   — FS DRAIN (R8) = ln's nanochain over the fs roots:
+#          # every leaf AND STORE its blob in the CAS (REVERSIBLE — gov decodes it cold), then
+#          fold ONE manifest nano = the drain coin. NOT lossy metadata (that was the shadow);
+#          the nanochain IS the drain. chip #'s in PARALLEL, chain folds the manifest ONCE.
+set -eu
+
+[ $# -eq 0 ] && exec "$0" fleet   # FLEET is the default verb (the 8-verb kernel: drain = FLEET = b2)
+if [ "${1:-}" = mail ]; then shift; fi   # explicit mail form; bare numeric stays the legacy mail drain
+if [ "${1:-}" = chat ]; then shift; exec sh "$HOME/.canonic/libexec/chat" "$@"; fi
+if [ "${1:-}" = fleet ]; then shift
+  # FLEET DRAIN — chip gzips the delta, chain stays single-writer (fleet = broadcast copies),
+  # each node's brain re-indexes its own copy. Loop-proof: the attest fold is minted with
+  # CANONIC_NOBEAT, and the stamp records the post-attest HEAD, so the next beat is a no-op.
+  NANO="$HOME/.canonic/bin/nano"; IDX="$HOME/.canonic/index"
+  LEDG="$HOME/forge/LEDGER"; EV="$LEDG/closure/events.jsonl"; CASD="$HOME/forge/cas/objects"
+  NODES="${CANONIC_FLEET:-nas=forge/LEDGER qemu-01=/root/forge/LEDGER pi-01=/root/forge/LEDGER}"
+  LOCKD="$IDX/.drain-fleet.lock"; STAMP="$IDX/.drain-fleet-tip"; CSTAMP="$IDX/.drain-fleet-cas"
+  SSH="ssh -o BatchMode=yes -o ConnectTimeout=10"
+  mkdir "$LOCKD" 2>/dev/null || exit 0                 # a drain is running; bursts coalesce
+  trap 'rmdir "$LOCKD" 2>/dev/null' EXIT INT TERM
+  tip=$(cat "$LEDG/HEAD" 2>/dev/null) || exit 0
+  [ "$tip" = "$(cat "$STAMP" 2>/dev/null || true)" ] && exit 0   # fleet already at tip
+  lsha=$(shasum -a 256 "$EV" | cut -c1-64); lln=$(wc -l < "$EV" | tr -d ' ')
+  ok=0; n=0; oknodes=""
+  for node in $NODES; do
+    h=${node%%=*}; p=${node#*=}; n=$((n+1)); evr="$p/closure/events.jsonl"
+    # ONE probe: marker + remote line count + full sha (the sha is the proof, not the count;
+    # the marker distinguishes "reachable, file missing" from "unreachable")
+    probe=$($SSH "$h" "echo P; wc -l < $evr 2>/dev/null | tr -d ' ' || echo 0; sha256sum $evr 2>/dev/null | cut -c1-64" 2>/dev/null) || probe=""
+    case "$probe" in P*) ;; *) echo "drain fleet  $h UNREACHABLE"; continue;; esac
+    rln=$(printf '%s\n' "$probe" | sed -n 2p); rsha=$(printf '%s\n' "$probe" | sed -n 3p)
+    case "$rln" in ''|*[!0-9]*) rln=0;; esac
+    if [ "$rsha" != "$lsha" ] && [ "$rln" -gt 0 ] && [ "$rln" -lt "$lln" ]; then
+      # append-only chain → append the delta, verify the FULL sha
+      rsha=$(tail -n +$((rln+1)) "$EV" | gzip -c | $SSH "$h" \
+        "gunzip >> $evr && sha256sum $evr" 2>/dev/null | cut -c1-64) || rsha=""
+    fi
+    if [ "$rsha" != "$lsha" ]; then
+      # empty or diverged → full push, atomic on the remote (tmp+mv), self-heals
+      rsha=$(gzip -c "$EV" | $SSH "$h" \
+        "gunzip > $evr.tmp && mv $evr.tmp $evr && sha256sum $evr" 2>/dev/null | cut -c1-64) || rsha=""
+    fi
+    if [ "$rsha" = "$lsha" ]; then
+      tar -C "$LEDG" -cf - HEAD HEAD.sig 2>/dev/null | gzip -c | $SSH "$h" "gunzip | tar -C $p -xf -" 2>/dev/null || true
+      ok=$((ok+1)); oknodes="$oknodes $h"; echo "drain fleet  $h OK ${lsha%${lsha#????????}}…"
+    else
+      echo "drain fleet  $h FAIL (sha mismatch)"
+    fi
+  done
+  # CAS delta → nas (the CAS rep), only when the nas chain push landed. First run diffs
+  # names (one-time); after that find -newer the stamp (zero cost when no new blobs).
+  case " $oknodes " in *" nas "*)
+    lst=$(mktemp); : > "$CSTAMP.next"
+    if [ -f "$CSTAMP" ]; then
+      find "$CASD" -type f -newer "$CSTAMP" 2>/dev/null | sed 's|.*/||' > "$lst"
+    else
+      rlist=$(mktemp)
+      $SSH nas 'ls forge/cas/objects 2>/dev/null' 2>/dev/null | sort > "$rlist" || : > "$rlist"
+      (cd "$CASD" && ls | sort) | comm -23 - "$rlist" > "$lst"; rm -f "$rlist"
+    fi
+    c=$(wc -l < "$lst" | tr -d ' ')
+    if [ "$c" -gt 0 ]; then
+      if (cd "$CASD" && tar -cf - -T "$lst" 2>/dev/null | gzip -c) | $SSH nas 'gunzip | tar -C forge/cas/objects -xf -' 2>/dev/null; then
+        mv "$CSTAMP.next" "$CSTAMP"; echo "drain fleet  cas→nas $c blobs"
+      else
+        rm -f "$CSTAMP.next"; echo "drain fleet  cas→nas FAIL"
+      fi
+    else
+      mv "$CSTAMP.next" "$CSTAMP"
+    fi
+    rm -f "$lst" ;;
+  esac
+  # ONE attest fold — over the sha the fleet was VERIFIED to hold. NOBEAT breaks the
+  # fold→beat→drain loop; the fleet then gets the attest itself appended (verified next drain).
+  # FAIL-CLOSED DRAIN: stamp ONLY when EVERY node is at tip. Stamping on partial success (ok>0)
+  # marked the drain "done" while a node was still behind — the straggler was never retried until
+  # the next fold happened to move HEAD (pi-01, 2026-07-12). A drain is complete or it is not.
+  if [ "$ok" -gt 0 ] && [ "$ok" -eq "$n" ]; then
+    ahead=$(CANONIC_NOBEAT=1 CANONIC_CATEGORY=DRAIN "$NANO" "#drain fleet $ok/$n | $lsha") || ahead=""
+    if [ -n "$ahead" ]; then
+      stamp_tip=$(cat "$LEDG/HEAD")
+      for h in $oknodes; do
+        for node in $NODES; do case "$node" in "$h"=*) p=${node#*=};; esac; done
+        tail -n +$((lln+1)) "$EV" | gzip -c | $SSH "$h" "gunzip >> $p/closure/events.jsonl" 2>/dev/null || true
+        tar -C "$LEDG" -cf - HEAD HEAD.sig 2>/dev/null | gzip -c | $SSH "$h" "gunzip | tar -C $p -xf -" 2>/dev/null || true
+      done
+      printf '%s\n' "$stamp_tip" > "$STAMP"
+      echo "drain fleet  $ok/$n ok  attest magic://$ahead"
+      # the T is WIRED .sov: EVO.sov at the address = the tip's full signed link,
+      # refreshed exactly when the tip moves (here, post-stamp) — time wears its own face.
+      if [ -d "$HOME/CANONIC" ]; then
+        grep -m1 "\"payload_hash\":\"$stamp_tip\"" "$EV" > "$HOME/CANONIC/EVO.sov" 2>/dev/null || true
+        PX=$(grep -o '"formal":"#fs manifest [0-9a-f]*' "$EV" | tail -1 | grep -o '[0-9a-f]\{64\}')
+        PX=$(grep 'LANG/bin/pixel' "$HOME/forge/cas/objects/$PX" 2>/dev/null | cut -d' ' -f1)
+        if [ -n "$PX" ] && [ -x "$HOME/.canonic/libexec/seticon" ]; then
+          bmp=$(PIXEL_NO_OPEN=1 sh "$HOME/forge/cas/objects/$PX" "$stamp_tip" 32 2>/dev/null) \
+          && sips -s format png "$bmp" --out "${bmp%.bmp}.png" >/dev/null 2>&1 \
+          && "$HOME/.canonic/libexec/seticon" "${bmp%.bmp}.png" "$HOME/CANONIC/EVO.sov" 2>/dev/null; rm -f "$bmp" "${bmp%.bmp}.png" 2>/dev/null
+        fi
+      fi
+      # close the drain's own beat: the NOBEAT attest left the index one fold behind;
+      # one beat catches it up (its spawned drain no-ops on stamp==HEAD — no recursion).
+      sh "$HOME/.canonic/libexec/canonic" beat >/dev/null 2>&1 || true
+    fi
+  else
+    echo "drain fleet  0/$n ok — no attest, retry next beat"
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = fs ]; then shift
+  NANO="$HOME/.canonic/bin/nano"; CAS="$HOME/forge/cas/objects"; mkdir -p "$CAS"
+  CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 8)
+  DRY=0; [ "${1:-}" = --dry ] && { DRY=1; shift; }
+  [ $# -ge 1 ] && ROOTS="$*" || ROOTS="$HOME/CANONIC $HOME/forge/box"
+  scan=$(mktemp)
+  # NULL-delimited: paths with spaces stay one leaf (the word-split bug the drain must not have)
+  # shellcheck disable=SC2086
+  find $ROOTS -type f \
+    ! -path '*/.git/*' ! -path '*/node_modules/*' ! -path '*/cas/objects/*' \
+    ! -path '*/LEDGER/*' ! -path '*/index/*' ! -path '*/queue/*' ! -path '*secrets*' \
+    ! -name '.DS_Store' ! -name '*.pem' ! -name 'id_*' ! -name '*.p12' ! -name '*.keychain*' \
+    -print0 2>/dev/null > "$scan"
+  n=$(tr -dc '\0' < "$scan" | wc -c | tr -d ' ')
+  if [ "$DRY" = 1 ]; then
+    echo "drain fs --dry  nanochain: $n leaves → CAS (reversible) + 1 manifest coin"
+    rm -f "$scan"; exit 0
+  fi
+  # swarm: # each leaf AND store its blob to CAS (reversible dedup) — ln's mechanism, fs roots
+  man=$(mktemp)
+  export CAS
+  xargs -0 -P "$CORES" -n1 sh -c '
+      h=$(shasum -a 256 "$1" | cut -c1-64)
+      [ -s "$CAS/$h" ] || cp "$1" "$CAS/$h"
+      printf "%s  %s\n" "$h" "${1#$HOME/}"
+    ' _ < "$scan" | sort -k2 > "$man"
+  MH=$(shasum -a 256 "$man" | cut -c1-64)
+  # ONE fold: the manifest # is the drain coin (the whole fs state in a single nano)
+  head=$(CANONIC_CATEGORY=FS "$NANO" "#fs manifest $MH | $n leaves")
+  # keep the manifest as a decodable sidecar (path ⇄ # map for this drain)
+  cp "$man" "$HOME/.canonic/index/fs-$MH.manifest" 2>/dev/null || true
+  echo "drain fs  $n leaves → CAS (reversible)  coin magic://$head  manifest ${MH%${MH#????????}}…"
+  rm -f "$scan" "$man"; exit 0
+fi
+
+DAYS="${1:-14}"
+NANO="$HOME/.canonic/bin/nano"
+LEDGER="$HOME/forge/LEDGER/closure/events.jsonl"
+EI=$(ls "$HOME"/Library/Mail/V*/MailData/Envelope\ Index 2>/dev/null | head -1)
+
+[ -x "$NANO" ] || { echo "drain: $NANO missing" >&2; exit 1; }
+[ -n "$EI" ] || { echo "drain: Envelope Index not found" >&2; exit 1; }
+
+# priority-0 senders: Apple developer program / App Store / TestFlight (vendor class)
+# + the principals, GROUNDED FROM THE CHAIN: every '#alias <addr> = <name>' fold is a
+# priority-0 human sender. sov grounds sov — the chain governs the drain's attention,
+# never a handcoded list (the Fatima scar: her mail invisible while apple's drained).
+PRIN=$(grep -oE '"formal":"#alias [^\" ]+@[^\" ]+ = ' "$LEDGER" 2>/dev/null \
+  | sed -E 's/^"formal":"#alias //; s/ = $//' | sort -u \
+  | while read -r a; do printf "OR a.address = '%s' " "$(printf '%s' "$a" | sed "s/'/''/g")"; done)
+sqlite3 -separator '	' "file:$EI?mode=ro" "
+  SELECT a.address, datetime(m.date_received,'unixepoch'), s.subject
+  FROM messages m
+  JOIN subjects s ON m.subject = s.ROWID
+  JOIN addresses a ON m.sender = a.ROWID
+  WHERE m.date_received > strftime('%s','now','-$DAYS days')
+    AND ( a.address LIKE '%devprograms@apple.com%'
+       OR a.address LIKE '%appstoreconnect%'
+       OR a.address LIKE '%testflight%'
+       OR a.address LIKE '%developer%apple.com%'
+       $PRIN )
+  ORDER BY m.date_received ASC
+" | while IFS="$(printf '\t')" read -r sender mdate subject; do
+  [ -n "$sender" ] || continue
+  formal="#mail $mdate | $sender | $subject"
+  # dedupe: skip if this exact formal is already on the chain
+  if grep -qF "$formal" "$LEDGER" 2>/dev/null; then
+    continue
+  fi
+  head="$("$NANO" "$formal")"   # serial — the chain is single-writer
+  echo "drained  magic://$head  $subject"
+done
